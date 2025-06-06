@@ -6,9 +6,12 @@ A CLI tool for syncing rotki data from various sources.
 
 Rotki Sync is a Go CLI tool that interacts with the rotki-core API to perform various synchronization tasks:
 
-- Fetch and process balances
+- Fetch and process balances (take a snapshot if needed)
 - Fetch and decode EVM transactions
+- Fetch staking events
+- Fetch exchange trades
 - Download the latest rotki-core binary
+- Create backups of rotki's data directory
 
 ## Installation
 
@@ -97,6 +100,16 @@ To see the current CI status, check the Actions tab in the GitHub repository.
 ./rotki-sync download
 ```
 
+### Creating a Backup
+
+```bash
+# Create a backup of rotki's data directory with default settings
+./rotki-sync backup
+
+# Create a backup with custom data and backup directories
+./rotki-sync backup --data-dir /path/to/rotki/data --backup-dir /path/to/backup/location
+```
+
 ### Running the Sync Process
 
 ```bash
@@ -119,11 +132,18 @@ Replace `USERNAME` with the actual username in uppercase.
 
 ### Command Line Options
 
+#### Global Options
+
 - `--port, -p`: Port to run rotki-core on (default: 59001)
 - `--bin-path, -b`: Path to rotki-core binary (default: bin/rotki-core)
+- `--data-dir`: Directory where rotki's data resides. (default: depends on the system)
 - `--max-retries, -r`: Maximum number of balance fetch retries (default: 10)
 - `--retry-delay, -d`: Delay between retries in milliseconds (default: 2000)
 - `--api-ready-timeout, -t`: Maximum attempts to check API readiness (default: 30)
+
+#### Backup Command Options
+
+- `--backup-dir`: Directory where the backup will be stored (default: ~/backups)
 
 ## Project Structure
 
@@ -132,7 +152,8 @@ Replace `USERNAME` with the actual username in uppercase.
 - `internal/utils`: Utility functions for HTTP requests and validation
 - `internal/blockchain`: Functionality for interacting with blockchain data
 - `internal/download`: Functionality for downloading the rotki-core binary
+- `internal/backup`: Functionality for creating backups of rotki's data directory
 
 ## License
 
-ISC
+[MIT](./LICENSE.md)

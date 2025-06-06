@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kelsos/rotki-sync/internal/backup"
 	"github.com/kelsos/rotki-sync/internal/blockchain"
 	"github.com/kelsos/rotki-sync/internal/download"
 	"github.com/kelsos/rotki-sync/internal/exchanges"
@@ -86,6 +87,22 @@ func main() {
 		},
 	}
 
+	// Add a backup command
+	var backupDir string
+	backupCmd := &cobra.Command{
+		Use:   "backup",
+		Short: "Create a backup of rotki's data directory",
+		Long:  `Create a backup of rotki's data directory, including specific files and directories.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			backupFile, err := backup.CreateBackup(dataDir, backupDir)
+			if err != nil {
+				logger.Fatal("Failed to create backup: %v", err)
+			}
+			logger.Info("Backup created successfully: %s", backupFile)
+		},
+	}
+	backupCmd.Flags().StringVarP(&backupDir, "backup-dir", "", "", "Directory where the backup will be stored (default: ~/backups)")
+
 	// Add flags
 	rootCmd.Flags().IntVarP(&port, "port", "p", 59001, "Port to run rotki-core on")
 	rootCmd.Flags().StringVarP(&binPath, "bin-path", "b", "bin/rotki-core", "Path to rotki-core binary")
@@ -96,6 +113,7 @@ func main() {
 
 	// Add subcommands
 	rootCmd.AddCommand(downloadCmd)
+	rootCmd.AddCommand(backupCmd)
 
 	// Execute the root command
 	if err := rootCmd.Execute(); err != nil {
