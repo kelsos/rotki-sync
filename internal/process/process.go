@@ -8,10 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
-	"time"
 
 	"github.com/kelsos/rotki-sync/internal/logger"
-	"github.com/kelsos/rotki-sync/internal/utils"
 )
 
 // RotkiProcess represents a running rotki-core process
@@ -62,20 +60,7 @@ func StartRotkiCore(binPath string, port int, apiReadyTimeout int, dataDir strin
 		BinPath: binPath,
 	}
 
-	// Wait for API to become ready
-	isAPIReady := utils.WaitForAPIReady(port, apiReadyTimeout, time.Second)
-
-	if !isAPIReady {
-		logger.Error("Failed to start rotki-core API. Exiting...")
-		if rotki.Process != nil {
-			err := rotki.Process.Kill()
-			if err != nil {
-				logger.Error("Failed to kill rotki-core process: %v", err)
-			}
-		}
-		return nil, fmt.Errorf("API failed to become ready after %d attempts", apiReadyTimeout)
-	}
-
+	logger.Info("rotki-core process started successfully")
 	return rotki, nil
 }
 
