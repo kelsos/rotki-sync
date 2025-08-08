@@ -1,6 +1,7 @@
 package services
 
 import (
+	"github.com/kelsos/rotki-sync/internal/async"
 	"github.com/kelsos/rotki-sync/internal/client"
 	"github.com/kelsos/rotki-sync/internal/config"
 	"github.com/kelsos/rotki-sync/internal/logger"
@@ -8,23 +9,29 @@ import (
 
 // SyncService orchestrates the data synchronization process
 type SyncService struct {
-	config     *config.Config
-	client     *client.APIClient
-	user       *UserService
-	blockchain *BlockchainService
-	exchange   *ExchangeService
+	config      *config.Config
+	client      *client.APIClient
+	taskManager *async.TaskManager
+	asyncClient *async.Client
+	user        *UserService
+	blockchain  *BlockchainService
+	exchange    *ExchangeService
 }
 
 // NewSyncService creates a new sync service with all dependencies
 func NewSyncService(cfg *config.Config) *SyncService {
 	apiClient := client.NewAPIClient(cfg)
+	taskManager := async.NewTaskManager(apiClient)
+	asyncClient := async.NewClient(taskManager)
 
 	return &SyncService{
-		config:     cfg,
-		client:     apiClient,
-		user:       NewUserService(apiClient),
-		blockchain: NewBlockchainService(apiClient),
-		exchange:   NewExchangeService(apiClient),
+		config:      cfg,
+		client:      apiClient,
+		taskManager: taskManager,
+		asyncClient: asyncClient,
+		user:        NewUserServiceWithAsyncClient(apiClient, asyncClient),
+		blockchain:  NewBlockchainServiceWithAsyncClient(apiClient, asyncClient),
+		exchange:    NewExchangeServiceWithAsyncClient(apiClient, asyncClient),
 	}
 }
 
@@ -74,4 +81,11 @@ func (s *SyncService) WaitForAPIReady() bool {
 // GetConfig returns the current configuration
 func (s *SyncService) GetConfig() *config.Config {
 	return s.config
+}
+
+// Cleanup performs cleanup operations including stopping the task manager
+func (s *SyncService) Cleanup() {
+	if s.taskManager != nil {
+		s.taskManager.Stop()
+	}
 }

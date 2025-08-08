@@ -58,6 +58,9 @@ func main() {
 
 			logger.Info("All users processed successfully")
 
+			// Cleanup resources
+			defer syncService.Cleanup()
+
 			// Wait for rotki-core to exit
 			if err := rotki.WaitForExit(); err != nil {
 				logger.Error("Error waiting for rotki-core to exit: %v", err)

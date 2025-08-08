@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 
+	"github.com/kelsos/rotki-sync/internal/async"
 	"github.com/kelsos/rotki-sync/internal/client"
 	"github.com/kelsos/rotki-sync/internal/logger"
 	"github.com/kelsos/rotki-sync/internal/models"
@@ -10,13 +11,15 @@ import (
 
 // ExchangeService handles exchange-related operations
 type ExchangeService struct {
-	client *client.APIClient
+	client      *client.APIClient
+	asyncClient *async.Client
 }
 
-// NewExchangeService creates a new exchange service
-func NewExchangeService(client *client.APIClient) *ExchangeService {
+// NewExchangeServiceWithAsyncClient creates a new exchange service with an async client
+func NewExchangeServiceWithAsyncClient(client *client.APIClient, asyncClient *async.Client) *ExchangeService {
 	return &ExchangeService{
-		client: client,
+		client:      client,
+		asyncClient: asyncClient,
 	}
 }
 
@@ -39,9 +42,13 @@ func (s *ExchangeService) FetchExchangeTrades(exchange models.Exchange) error {
 		"location": exchange.Location,
 	}
 
-	var response map[string]interface{}
-	if err := s.client.Post("/history/events/query/exchange", requestData, &response); err != nil {
+	// Use async for fetching exchange trades
+	response, err := async.Post[bool](s.asyncClient, "/history/events/query/exchange", requestData)
+	if err != nil {
 		return fmt.Errorf("failed to fetch trades for exchange %s: %w", exchange.Name, err)
+	}
+	if response == nil {
+		return fmt.Errorf("received nil response for exchange %s trades", exchange.Name)
 	}
 
 	logger.Info("Successfully fetched trades for exchange: %s", exchange.Name)

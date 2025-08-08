@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kelsos/rotki-sync/internal/async"
 	"github.com/kelsos/rotki-sync/internal/client"
 	"github.com/kelsos/rotki-sync/internal/logger"
 	"github.com/kelsos/rotki-sync/internal/models"
@@ -12,13 +13,15 @@ import (
 
 // UserService handles user-related operations
 type UserService struct {
-	client *client.APIClient
+	client      *client.APIClient
+	asyncClient *async.Client
 }
 
-// NewUserService creates a new user service
-func NewUserService(client *client.APIClient) *UserService {
+// NewUserServiceWithAsyncClient creates a new user service with an async client
+func NewUserServiceWithAsyncClient(client *client.APIClient, asyncClient *async.Client) *UserService {
 	return &UserService{
-		client: client,
+		client:      client,
+		asyncClient: asyncClient,
 	}
 }
 
@@ -50,13 +53,18 @@ func (s *UserService) Login(username string) error {
 	}
 
 	endpoint := fmt.Sprintf("/users/%s", username)
-	loginData := map[string]string{
+	loginData := map[string]interface{}{
 		"password": password,
 	}
 
-	var response models.UserLoginResponse
-	if err := s.client.Post(endpoint, loginData, &response); err != nil {
+	// Use async login
+	response, err := async.Post[models.UserLoginResponse](s.asyncClient, endpoint, loginData)
+	if err != nil {
 		return fmt.Errorf("failed to login user %s: %w", username, err)
+	}
+	// Check if response is not nil to ensure successful async execution
+	if response == nil {
+		return fmt.Errorf("received nil response for user %s login", username)
 	}
 
 	logger.Debug("User %s logged in successfully", username)

@@ -2,8 +2,11 @@ package services
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
+	"github.com/kelsos/rotki-sync/internal/async"
 	"github.com/kelsos/rotki-sync/internal/client"
 	"github.com/kelsos/rotki-sync/internal/logger"
 	"github.com/kelsos/rotki-sync/internal/models"
@@ -22,13 +25,15 @@ func isChainExcluded(chainName string) bool {
 
 // BlockchainService handles blockchain-related operations
 type BlockchainService struct {
-	client *client.APIClient
+	client      *client.APIClient
+	asyncClient *async.Client
 }
 
-// NewBlockchainService creates a new blockchain service
-func NewBlockchainService(client *client.APIClient) *BlockchainService {
+// NewBlockchainServiceWithAsyncClient creates a new blockchain service with an async client
+func NewBlockchainServiceWithAsyncClient(client *client.APIClient, asyncClient *async.Client) *BlockchainService {
 	return &BlockchainService{
-		client: client,
+		client:      client,
+		asyncClient: asyncClient,
 	}
 }
 
@@ -107,6 +112,11 @@ func (s *BlockchainService) FetchEvmTransactions(fromTimestamp, toTimestamp int6
 	for chainID, accounts := range accountsByChain {
 		logger.Info("Processing %d accounts for chain %s", len(accounts), chainID)
 
+		// Sort accounts alphabetically by address for consistent processing order
+		sort.Slice(accounts, func(i, j int) bool {
+			return accounts[i].Address < accounts[j].Address
+		})
+
 		// Adjust timestamps to be safe (back 1 day from now)
 		chainFromTimestamp := fromTimestamp
 		if chainFromTimestamp == 0 {
@@ -142,11 +152,15 @@ func (s *BlockchainService) GetAccountTransactions(account models.ChainAccount, 
 		ToTimestamp:   toTimestamp,
 	}
 
-	var response models.EvmTransactionsResponse
-	if err := s.client.Post("/blockchains/evm/transactions", requestData, &response); err != nil {
+	// Use async for fetching EVM transactions
+	response, err := async.Post[bool](s.asyncClient, "/blockchains/evm/transactions", requestData)
+	if err != nil {
 		logger.Error("Failed to fetch transactions for %s for chain %s: %v",
 			account.Address, account.EvmChain, err)
 		return fmt.Errorf("failed to fetch transactions for %s for chain %s: %w", account.Address, account.EvmChain, err)
+	}
+	if response == nil {
+		return fmt.Errorf("received nil response for transactions of %s on chain %s", account.Address, account.EvmChain)
 	}
 
 	return nil
@@ -176,9 +190,14 @@ func (s *BlockchainService) DecodeEvmTransactions() error {
 			Chains: []string{chainName},
 		}
 
-		var response models.EvmTransactionDecodeResponse
-		if err := s.client.Post("/blockchains/evm/transactions/decode", requestData, &response); err != nil {
+		// Use async for decoding EVM transactions
+		response, err := async.Post[models.EvmTransactionDecodeResult](s.asyncClient, "/blockchains/evm/transactions/decode", requestData)
+		if err != nil {
 			logger.Error("Failed to decode transactions for chain %s: %v", chainName, err)
+			continue
+		}
+		if response == nil {
+			logger.Error("Received nil response for decoding transactions on chain %s", chainName)
 			continue
 		}
 
@@ -194,7 +213,18 @@ func (s *BlockchainService) DecodeEvmTransactions() error {
 // FetchOnlineEvents fetches online events
 func (s *BlockchainService) FetchOnlineEvents() error {
 	logger.Info("Fetching online events")
-	// TODO: check if eth2 module is activated...
+
+	// Check if eth2 module is activated
+	isEth2Active, err := s.IsEth2ModuleActive()
+	if err != nil {
+		logger.Error("Failed to check eth2 module status: %v", err)
+		return fmt.Errorf("failed to check eth2 module status: %w", err)
+	}
+
+	if !isEth2Active {
+		logger.Info("Eth2 module is not active, skipping online events fetch")
+		return nil
+	}
 
 	for _, queryType := range []models.QueryType{models.BlockProductionsQuery, models.EthWithdrawalsQuery} {
 		logger.Info("Fetching %s events", queryType)
@@ -203,9 +233,14 @@ func (s *BlockchainService) FetchOnlineEvents() error {
 			QueryType: queryType,
 		}
 
-		var response models.EventsQueryResponse
-		if err := s.client.Post("/history/events/query", requestData, &response); err != nil {
+		// Use async for fetching history events
+		response, err := async.Post[bool](s.asyncClient, "/history/events/query", requestData)
+		if err != nil {
 			logger.Error("Failed to fetch %s events: %v", queryType, err)
+			continue
+		}
+		if response == nil {
+			logger.Error("Received nil response for %s events", queryType)
 			continue
 		}
 
@@ -233,12 +268,31 @@ func (s *BlockchainService) FetchExchangeRate(currency string) (float64, error) 
 		return 0, fmt.Errorf("invalid response format for exchange rate")
 	}
 
-	rate, ok := result[currency].(float64)
-	if !ok {
-		return 0, fmt.Errorf("exchange rate for %s not found", currency)
+	// Check if the currency key exists and what type it is
+	if currencyData, exists := result[currency]; exists {
+		// Try different possible formats
+		switch v := currencyData.(type) {
+		case float64:
+			return v, nil
+		case string:
+			// Parse string to float64
+			if rate, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
+				return rate, nil
+			} else {
+				return 0, fmt.Errorf("failed to parse exchange rate string %s for %s: %w", v, currency, parseErr)
+			}
+		case map[string]interface{}:
+			// Check if there's a nested structure
+			if rate, ok := v["rate"].(float64); ok {
+				return rate, nil
+			}
+			if rate, ok := v["value"].(float64); ok {
+				return rate, nil
+			}
+		}
 	}
 
-	return rate, nil
+	return 0, fmt.Errorf("exchange rate for %s not found in response", currency)
 }
 
 // GetLastBalanceSave gets the timestamp of the last balance save
@@ -281,6 +335,33 @@ func (s *BlockchainService) GetBalanceSaveFrequency() (int, error) {
 	return int(frequency), nil
 }
 
+// IsEth2ModuleActive checks if the eth2 module is active in settings
+func (s *BlockchainService) IsEth2ModuleActive() (bool, error) {
+	var response map[string]interface{}
+	if err := s.client.Get("/settings", &response); err != nil {
+		return false, fmt.Errorf("failed to get settings: %w", err)
+	}
+
+	result, ok := response["result"].(map[string]interface{})
+	if !ok {
+		return false, fmt.Errorf("invalid response format for settings")
+	}
+
+	activeModules, ok := result["active_modules"].([]interface{})
+	if !ok {
+		logger.Debug("No active_modules found in settings")
+		return false, nil
+	}
+
+	for _, module := range activeModules {
+		if moduleStr, ok := module.(string); ok && moduleStr == "eth2" {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // TakeBalanceSnapshot takes a balance snapshot
 func (s *BlockchainService) TakeBalanceSnapshot(forceSnapshot bool) error {
 	query := ""
@@ -289,10 +370,14 @@ func (s *BlockchainService) TakeBalanceSnapshot(forceSnapshot bool) error {
 	}
 
 	endpoint := fmt.Sprintf("/balances%s", query)
-	var response map[string]interface{}
 
-	if err := s.client.Get(endpoint, &response); err != nil {
+	// Use async for balance snapshot
+	response, err := async.Get[map[string]interface{}](s.asyncClient, endpoint)
+	if err != nil {
 		return fmt.Errorf("failed to take balance snapshot: %w", err)
+	}
+	if response == nil {
+		return fmt.Errorf("received nil response for balance snapshot")
 	}
 
 	// Fetch EUR exchange rate
@@ -300,7 +385,7 @@ func (s *BlockchainService) TakeBalanceSnapshot(forceSnapshot bool) error {
 	if err != nil {
 		logger.Error("Failed to fetch EUR exchange rate: %v", err)
 	} else {
-		logger.Info("Current EUR exchange rate: %.6f", euroRate)
+		logger.Debug("Current EUR exchange rate: %.6f", euroRate)
 	}
 
 	logger.Info("Balance snapshot completed successfully")
