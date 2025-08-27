@@ -11,11 +11,14 @@ import (
 	"github.com/kelsos/rotki-sync/internal/logger"
 	"github.com/kelsos/rotki-sync/internal/process"
 	"github.com/kelsos/rotki-sync/internal/services"
+	"github.com/kelsos/rotki-sync/internal/tui"
 	"github.com/kelsos/rotki-sync/internal/utils"
 )
 
 func main() {
 	utils.LoadEnvironment()
+
+	// Initialize basic console logger (will be reconfigured later based on flags)
 	logger.Init()
 
 	// Initialize configuration with defaults
@@ -23,12 +26,28 @@ func main() {
 	cfg.LoadFromEnvironment()
 
 	var backupDir string
+	var disableTUI bool
 
 	rootCmd := &cobra.Command{
 		Use:   "rotki-sync",
 		Short: "A CLI tool for syncing rotki data",
 		Long:  `rotki-sync is a CLI tool for syncing rotki data from various sources.`,
 		Run: func(cmd *cobra.Command, args []string) {
+			// Initialize logger based on TUI mode
+			if !disableTUI {
+				// Use file-only logging for TUI mode
+				if err := logger.InitFileOnly(); err != nil {
+					// Fallback to console logger if file init fails
+					logger.Init()
+					logger.Error("Failed to initialize file logging, using console: %v", err)
+				}
+				// Ensure we close the log file on exit
+				defer logger.Close()
+			} else {
+				// Use console logging for non-TUI mode
+				logger.Init()
+			}
+
 			// Update config with flag values
 			cfg.SetBaseURL()
 
@@ -51,12 +70,24 @@ func main() {
 				logger.Fatal("API failed to become ready")
 			}
 
-			// Process all users
-			if err := syncService.ProcessAllUsers(); err != nil {
-				logger.Error("Error processing users: %v", err)
-			}
+			// Process users with or without TUI (TUI is default)
+			if !disableTUI {
+				// Run with TUI monitoring (default)
+				monitor := tui.NewSyncMonitor(syncService)
+				if err := monitor.Start(); err != nil {
+					logger.Fatal("Failed to start TUI monitor: %v", err)
+				}
 
-			logger.Info("All users processed successfully")
+				if err := monitor.Run(); err != nil {
+					logger.Error("Error running TUI monitor: %v", err)
+				}
+			} else {
+				// Process all users without TUI (when --no-tui flag is used)
+				if err := syncService.ProcessAllUsers(); err != nil {
+					logger.Error("Error processing users: %v", err)
+				}
+				logger.Info("All users processed successfully")
+			}
 
 			// Cleanup resources
 			defer syncService.Cleanup()
@@ -73,6 +104,7 @@ func main() {
 		Use:   "download",
 		Short: "Download the latest rotki-core binary",
 		Run: func(cmd *cobra.Command, args []string) {
+			logger.Init() // Always use console for subcommands
 			if err := download.DownloadRotkiCore(); err != nil {
 				logger.Fatal("Failed to download rotki-core: %v", err)
 			}
@@ -85,6 +117,7 @@ func main() {
 		Short: "Create a backup of rotki's data directory",
 		Long:  `Create a backup of rotki's data directory, including specific files and directories.`,
 		Run: func(cmd *cobra.Command, args []string) {
+			logger.Init() // Always use console for subcommands
 			backupFile, err := backup.CreateBackup(cfg.DataDir, backupDir)
 			if err != nil {
 				logger.Fatal("Failed to create backup: %v", err)
@@ -103,6 +136,7 @@ func main() {
 	var retryDelayMs int
 	rootCmd.Flags().IntVarP(&retryDelayMs, "retry-delay", "d", int(cfg.RetryDelay/time.Millisecond), "Delay between retries in milliseconds")
 	rootCmd.Flags().IntVarP(&cfg.APIReadyTimeout, "api-ready-timeout", "t", cfg.APIReadyTimeout, "Maximum attempts to check API readiness")
+	rootCmd.Flags().BoolVarP(&disableTUI, "no-tui", "", false, "Disable interactive TUI monitoring mode")
 
 	// Update retry delay from milliseconds to duration
 	rootCmd.PreRun = func(cmd *cobra.Command, args []string) {

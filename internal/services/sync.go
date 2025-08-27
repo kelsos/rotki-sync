@@ -89,3 +89,72 @@ func (s *SyncService) Cleanup() {
 		s.taskManager.Stop()
 	}
 }
+
+// GetUsers retrieves all users from the system
+func (s *SyncService) GetUsers() ([]string, error) {
+	return s.user.GetUsers()
+}
+
+// ProcessUsersWithCallback processes all users with callbacks for monitoring
+func (s *SyncService) ProcessUsersWithCallback(
+	onLogin func(username string) error,
+	processFunc func(username string) error,
+	onLogout func(username string) error,
+) error {
+	return s.user.ProcessUsersWithCallback(onLogin, processFunc, onLogout)
+}
+
+// PerformSnapshotIfNeeded performs a blockchain snapshot if needed
+func (s *SyncService) PerformSnapshotIfNeeded() error {
+	return s.blockchain.PerformSnapshotIfNeeded()
+}
+
+// GetExchangeTrades fetches exchange trades
+func (s *SyncService) GetExchangeTrades() error {
+	return s.exchange.GetExchangeTrades()
+}
+
+// FetchOnlineEvents fetches online blockchain events
+func (s *SyncService) FetchOnlineEvents() error {
+	return s.blockchain.FetchOnlineEvents()
+}
+
+// FetchEvmTransactions fetches EVM transactions
+func (s *SyncService) FetchEvmTransactions(fromTimestamp, toTimestamp int64) error {
+	return s.blockchain.FetchEvmTransactions(fromTimestamp, toTimestamp)
+}
+
+// DecodeEvmTransactions decodes EVM transactions
+func (s *SyncService) DecodeEvmTransactions() error {
+	return s.blockchain.DecodeEvmTransactions()
+}
+
+// FetchAccounts retrieves all accounts for all chains
+func (s *SyncService) FetchAccounts() ([]interface{}, error) {
+	accounts, err := s.blockchain.FetchAccounts()
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to interface{} slice for TUI compatibility
+	result := make([]interface{}, len(accounts))
+	for i, acc := range accounts {
+		result[i] = acc
+	}
+	return result, nil
+}
+
+// GetSupportedEvmChains retrieves supported EVM chains
+func (s *SyncService) GetSupportedEvmChains() ([]interface{}, error) {
+	chains, err := s.blockchain.GetSupportedEvmChains()
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to interface{} slice for TUI compatibility
+	result := make([]interface{}, len(chains))
+	for i, chain := range chains {
+		result[i] = chain
+	}
+	return result, nil
+}

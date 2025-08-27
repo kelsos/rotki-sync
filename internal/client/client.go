@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/kelsos/rotki-sync/internal/config"
@@ -142,4 +144,33 @@ func (c *APIClient) WaitForAPIReady() bool {
 
 	logger.Error("API failed to become ready after %d attempts", c.config.APIReadyTimeout)
 	return false
+}
+
+// BuildURLWithParams properly builds a URL with query parameters
+func BuildURLWithParams(endpoint string, params map[string]string) string {
+	if len(params) == 0 {
+		return endpoint
+	}
+
+	// Parse the endpoint to check for existing query parameters
+	parts := strings.SplitN(endpoint, "?", 2)
+	baseURL := parts[0]
+
+	// Parse existing query parameters if any
+	values := url.Values{}
+	if len(parts) > 1 {
+		existingParams, _ := url.ParseQuery(parts[1])
+		values = existingParams
+	}
+
+	// Add new parameters
+	for key, value := range params {
+		values.Set(key, value)
+	}
+
+	// Build the final URL
+	if len(values) > 0 {
+		return baseURL + "?" + values.Encode()
+	}
+	return baseURL
 }

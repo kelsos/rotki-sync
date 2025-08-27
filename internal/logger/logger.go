@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/rs/zerolog"
 )
 
 var log zerolog.Logger
+var logFile *os.File
 
 func Init() {
 	output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
@@ -26,6 +28,44 @@ func Init() {
 
 	if _, exists := os.LookupEnv("DEBUG"); exists {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+}
+
+// InitFileOnly initializes the logger to write only to a file (for TUI mode)
+func InitFileOnly() error {
+	// Create logs directory if it doesn't exist
+	logDir := "logs"
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create logs directory: %w", err)
+	}
+
+	// Create log file with timestamp
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	logPath := filepath.Join(logDir, fmt.Sprintf("rotki-sync_%s.log", timestamp))
+
+	var err error
+	logFile, err = os.Create(logPath)
+	if err != nil {
+		return fmt.Errorf("failed to create log file: %w", err)
+	}
+
+	// Use JSON format for file logging (easier to parse)
+	log = zerolog.New(logFile).With().Timestamp().Logger()
+
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+
+	if _, exists := os.LookupEnv("DEBUG"); exists {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+
+	Info("Logger initialized in file-only mode: %s", logPath)
+	return nil
+}
+
+// Close closes the log file if it's open
+func Close() {
+	if logFile != nil {
+		logFile.Close()
 	}
 }
 

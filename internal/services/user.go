@@ -129,3 +129,62 @@ func (s *UserService) ProcessUsers(processFunc func(username string) error) erro
 
 	return nil
 }
+
+// ProcessUsersWithCallback processes all users with callbacks for monitoring
+func (s *UserService) ProcessUsersWithCallback(
+	onLogin func(username string) error,
+	processFunc func(username string) error,
+	onLogout func(username string) error,
+) error {
+	var userResponse models.UserResponse
+	if err := s.client.Get("/users", &userResponse); err != nil {
+		return fmt.Errorf("failed to get users: %w", err)
+	}
+
+	var loggedInUsers []string
+	for username, userStatus := range userResponse.Result {
+		if userStatus == models.StatusLoggedIn {
+			loggedInUsers = append(loggedInUsers, username)
+		}
+	}
+
+	// Logout all currently logged-in users
+	for _, username := range loggedInUsers {
+		if err := s.Logout(username); err != nil {
+			logger.Error("Failed to logout user %s: %v", username, err)
+		}
+	}
+
+	// Process each user
+	for username := range userResponse.Result {
+		// Call onLogin callback
+		if onLogin != nil {
+			if err := onLogin(username); err != nil {
+				logger.Error("onLogin callback failed for user %s: %v", username, err)
+			}
+		}
+
+		if err := s.Login(username); err != nil {
+			logger.Error("Failed to login user %s: %v", username, err)
+			continue
+		}
+
+		logger.Info("Processing user: %s", username)
+		if err := processFunc(username); err != nil {
+			logger.Error("Error processing user %s: %v", username, err)
+		}
+
+		// Call onLogout callback
+		if onLogout != nil {
+			if err := onLogout(username); err != nil {
+				logger.Error("onLogout callback failed for user %s: %v", username, err)
+			}
+		}
+
+		if err := s.Logout(username); err != nil {
+			logger.Error("Failed to logout user %s: %v", username, err)
+		}
+	}
+
+	return nil
+}

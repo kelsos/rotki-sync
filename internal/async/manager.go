@@ -3,6 +3,7 @@ package async
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,12 +135,19 @@ func (tm *TaskManager) Stop() {
 
 // prepareAsyncEndpoint adds async_query=true parameter to GET endpoints
 func prepareAsyncEndpoint(endpoint string) string {
-	asyncEndpoint := endpoint
-	if endpoint != "" && endpoint[len(endpoint)-1] != '?' {
-		asyncEndpoint += "?"
+	// Parse the URL to properly handle existing query parameters
+	if endpoint == "" {
+		return "?async_query=true"
 	}
-	asyncEndpoint += "async_query=true"
-	return asyncEndpoint
+
+	// Check if there are already query parameters
+	if strings.Contains(endpoint, "?") {
+		// URL already has query parameters, append with &
+		return endpoint + "&async_query=true"
+	}
+
+	// No existing query parameters, add with ?
+	return endpoint + "?async_query=true"
 }
 
 // prepareRequestBody converts body to map and adds async_query=true
