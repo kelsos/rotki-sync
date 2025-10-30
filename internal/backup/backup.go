@@ -13,6 +13,23 @@ import (
 	"github.com/kelsos/rotki-sync/internal/logger"
 )
 
+// ExpandPath expands ~ to the user's home directory
+func ExpandPath(path string) (string, error) {
+	if path == "" {
+		return path, nil
+	}
+
+	if strings.HasPrefix(path, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to get user home directory: %w", err)
+		}
+		return filepath.Join(homeDir, path[2:]), nil
+	}
+
+	return path, nil
+}
+
 func GetDataHome() (string, error) {
 	if dataHome := os.Getenv("XDG_DATA_HOME"); dataHome != "" {
 		return dataHome, nil
@@ -77,6 +94,18 @@ func CreateBackup(dataDir, backupDir string) (string, error) {
 		backupDir, err = GetDefaultBackupDir()
 		if err != nil {
 			return "", fmt.Errorf("failed to get default backup directory: %w", err)
+		}
+	} else {
+		// Expand ~ in the path if present
+		expandedPath, err := ExpandPath(backupDir)
+		if err != nil {
+			return "", fmt.Errorf("failed to expand backup directory path: %w", err)
+		}
+		backupDir = expandedPath
+
+		// Ensure the backup directory exists
+		if err := os.MkdirAll(backupDir, 0755); err != nil {
+			return "", fmt.Errorf("failed to create backup directory: %w", err)
 		}
 	}
 
