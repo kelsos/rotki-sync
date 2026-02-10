@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/kelsos/rotki-sync/internal/async"
@@ -36,6 +37,7 @@ func (s *UserService) GetUsers() ([]string, error) {
 	for username := range response.Result {
 		users = append(users, username)
 	}
+	sort.Strings(users)
 
 	return users, nil
 }
@@ -89,29 +91,46 @@ func (s *UserService) Logout(username string) error {
 	return nil
 }
 
-// ProcessUsers processes all users with the given function
-func (s *UserService) ProcessUsers(processFunc func(username string) error) error {
+// getSortedUsers fetches users and returns sorted usernames plus any currently logged-in users
+func (s *UserService) getSortedUsers() (allUsers []string, loggedIn []string, err error) {
 	var userResponse models.UserResponse
 	if err := s.client.Get("/users", &userResponse); err != nil {
-		return fmt.Errorf("failed to get users: %w", err)
+		return nil, nil, fmt.Errorf("failed to get users: %w", err)
 	}
 
-	var loggedInUsers []string
 	for username, userStatus := range userResponse.Result {
+		allUsers = append(allUsers, username)
 		if userStatus == models.StatusLoggedIn {
-			loggedInUsers = append(loggedInUsers, username)
+			loggedIn = append(loggedIn, username)
 		}
 	}
+	sort.Strings(allUsers)
+	sort.Strings(loggedIn)
 
-	// Logout all currently logged-in users
-	for _, username := range loggedInUsers {
+	return allUsers, loggedIn, nil
+}
+
+// logoutUsers logs out a list of users, logging errors but not failing
+func (s *UserService) logoutUsers(usernames []string) {
+	for _, username := range usernames {
 		if err := s.Logout(username); err != nil {
 			logger.Error("Failed to logout user %s: %v", username, err)
 		}
 	}
+}
+
+// ProcessUsers processes all users with the given function
+func (s *UserService) ProcessUsers(processFunc func(username string) error) error {
+	allUsers, loggedIn, err := s.getSortedUsers()
+	if err != nil {
+		return err
+	}
+
+	// Logout all currently logged-in users
+	s.logoutUsers(loggedIn)
 
 	// Process each user
-	for username := range userResponse.Result {
+	for _, username := range allUsers {
 		if err := s.Login(username); err != nil {
 			logger.Error("Failed to login user %s: %v", username, err)
 			continue
@@ -130,42 +149,39 @@ func (s *UserService) ProcessUsers(processFunc func(username string) error) erro
 	return nil
 }
 
-// ProcessUsersWithCallback processes all users with callbacks for monitoring
+// ProcessUsersWithCallback processes all users with callbacks for monitoring.
+// onLoginResult is called after a login attempt with the error (nil on success).
+// onLogout is called after processing or on login failure.
 func (s *UserService) ProcessUsersWithCallback(
-	onLogin func(username string) error,
+	onLoginResult func(username string, loginErr error),
 	processFunc func(username string) error,
 	onLogout func(username string) error,
 ) error {
-	var userResponse models.UserResponse
-	if err := s.client.Get("/users", &userResponse); err != nil {
-		return fmt.Errorf("failed to get users: %w", err)
-	}
-
-	var loggedInUsers []string
-	for username, userStatus := range userResponse.Result {
-		if userStatus == models.StatusLoggedIn {
-			loggedInUsers = append(loggedInUsers, username)
-		}
+	allUsers, loggedIn, err := s.getSortedUsers()
+	if err != nil {
+		return err
 	}
 
 	// Logout all currently logged-in users
-	for _, username := range loggedInUsers {
-		if err := s.Logout(username); err != nil {
-			logger.Error("Failed to logout user %s: %v", username, err)
-		}
-	}
+	s.logoutUsers(loggedIn)
 
 	// Process each user
-	for username := range userResponse.Result {
-		// Call onLogin callback
-		if onLogin != nil {
-			if err := onLogin(username); err != nil {
-				logger.Error("onLogin callback failed for user %s: %v", username, err)
-			}
+	for _, username := range allUsers {
+		loginErr := s.Login(username)
+		if loginErr != nil {
+			logger.Error("Failed to login user %s: %v", username, loginErr)
 		}
 
-		if err := s.Login(username); err != nil {
-			logger.Error("Failed to login user %s: %v", username, err)
+		// Notify about login result
+		if onLoginResult != nil {
+			onLoginResult(username, loginErr)
+		}
+
+		if loginErr != nil {
+			// Call onLogout so the TUI can mark this user as complete/failed
+			if onLogout != nil {
+				_ = onLogout(username)
+			}
 			continue
 		}
 
