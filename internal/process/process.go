@@ -44,6 +44,18 @@ func StartRotkiCore(binPath string, port int, apiReadyTimeout int, dataDir strin
 		args = append(args, "--data-dir", dataDir)
 	}
 
+	// Create logs directory if it doesn't exist
+	logDir := "logs"
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create logs directory: %w", err)
+	}
+
+	// Configure rotki-core to log to file in the logs directory
+	logPath := filepath.Join(logDir, "rotki-core.log")
+	args = append(args, "--logtarget", "file", "--logfile", logPath)
+
+	logger.Info("rotki-core logs will be written to: %s", logPath)
+
 	// #nosec G204 - Parameters have been validated and sanitized above
 	cmd := exec.Command(binPath, args...)
 	cmd.Stdout = os.Stdout
