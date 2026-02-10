@@ -53,6 +53,7 @@ type Model struct {
 	width        int
 	height       int
 	quit         bool
+	done         bool
 	errorCount   int
 	successCount int
 }
@@ -76,6 +77,10 @@ type TaskUpdate struct {
 
 type UsersLoaded struct {
 	Users []string
+}
+
+type SyncComplete struct {
+	Error error
 }
 
 func NewModel() Model {
@@ -128,7 +133,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TaskUpdate:
 		m = m.handleTaskUpdate(msg)
 
+	case SyncComplete:
+		m.done = true
+		if msg.Error != nil {
+			m.logs = append(m.logs, fmt.Sprintf("[%s] ❌ Sync failed: %v",
+				time.Now().Format("15:04:05"), msg.Error))
+		} else {
+			m.logs = append(m.logs, fmt.Sprintf("[%s] ✅ All syncs completed successfully",
+				time.Now().Format("15:04:05")))
+		}
+		return m, nil
+
 	case spinner.TickMsg:
+		if m.done {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
@@ -263,10 +282,15 @@ func (m Model) View() string {
 		statusIcon := getStageIcon(status.Status.Stage)
 		stageColor := getStageColor(status.Status.Stage)
 
+		spinnerView := m.spinner.View()
+		if status.Status.Stage == StageComplete || status.Status.Stage == StageIdle {
+			spinnerView = " "
+		}
+
 		userLine := fmt.Sprintf("%s %-15s %s %-12s",
 			statusIcon,
 			truncate(user, 15),
-			m.spinner.View(),
+			spinnerView,
 			status.Status.Stage)
 
 		if status.Status.Stage != StageIdle && status.Status.Stage != StageComplete {
@@ -307,11 +331,17 @@ func (m Model) View() string {
 	s.WriteString("\n\n")
 
 	// Footer
-	footerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("241"))
-
-	footer := "Press 'q' to quit | Logs: logs/rotki-sync_*.log"
-	s.WriteString(footerStyle.Render(footer))
+	if m.done {
+		doneStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("82"))
+		s.WriteString(doneStyle.Render("Sync complete! Press 'q' to exit."))
+	} else {
+		footerStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
+		footer := "Press 'q' to quit | Logs: logs/rotki-sync_*.log"
+		s.WriteString(footerStyle.Render(footer))
+	}
 
 	return s.String()
 }

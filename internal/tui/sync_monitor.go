@@ -153,11 +153,14 @@ func (sm *SyncMonitor) ProcessAllUsersWithMonitoring() error {
 func (sm *SyncMonitor) Run() error {
 	// Start the sync process in a goroutine
 	go func() {
-		if err := sm.ProcessAllUsersWithMonitoring(); err != nil {
+		err := sm.ProcessAllUsersWithMonitoring()
+		if err != nil {
 			sm.AddLog(fmt.Sprintf("❌ Fatal error: %v", err))
 		}
-		// Signal completion
-		sm.Stop()
+		// Signal completion — TUI stays open until the user presses 'q'
+		if sm.program != nil {
+			sm.program.Send(SyncComplete{Error: err})
+		}
 	}()
 
 	// Run the TUI (blocks until quit)
