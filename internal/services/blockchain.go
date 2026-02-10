@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -37,33 +38,45 @@ func NewBlockchainServiceWithAsyncClient(client *client.APIClient, asyncClient *
 	}
 }
 
-// GetSupportedEvmChains retrieves supported EVM chains
-func (s *BlockchainService) GetSupportedEvmChains() ([]models.Blockchain, error) {
+// nonDecodableChainTypes contains chain types that don't support transaction decoding
+var nonDecodableChainTypes = map[string]bool{
+	models.ChainTypeBitcoin: true,
+}
+
+// nonEvmChainTypes lists the chain types considered non-EVM for transaction fetching
+var nonEvmChainTypes = []string{
+	models.ChainTypeEvmLike,
+	models.ChainTypeBitcoin,
+	models.ChainTypeSolana,
+}
+
+// GetSupportedChainsByType retrieves supported chains filtered by type
+func (s *BlockchainService) GetSupportedChainsByType(chainType string) ([]models.Blockchain, error) {
 	var response models.BlockchainResponse
 	if err := s.client.Get("/blockchains/supported", &response); err != nil {
-		return nil, fmt.Errorf("failed to get supported EVM chains: %w", err)
+		return nil, fmt.Errorf("failed to get supported chains for type %s: %w", chainType, err)
 	}
 
-	var evmChains []models.Blockchain
+	var chains []models.Blockchain
 	for _, blockchain := range response.Result {
-		if blockchain.Type == "evm" {
-			evmChains = append(evmChains, blockchain)
+		if blockchain.Type == chainType {
+			chains = append(chains, blockchain)
 		}
 	}
 
-	return evmChains, nil
+	return chains, nil
 }
 
-// FetchAccounts retrieves accounts for all EVM chains
-func (s *BlockchainService) FetchAccounts() ([]models.ChainAccount, error) {
-	evmChains, err := s.GetSupportedEvmChains()
-	if err != nil {
-		return nil, err
-	}
+// GetSupportedEvmChains retrieves supported EVM chains
+func (s *BlockchainService) GetSupportedEvmChains() ([]models.Blockchain, error) {
+	return s.GetSupportedChainsByType(models.ChainTypeEvm)
+}
 
+// FetchAccountsForChains retrieves accounts for the given chains
+func (s *BlockchainService) FetchAccountsForChains(chains []models.Blockchain) ([]models.ChainAccount, error) {
 	var allAccounts []models.ChainAccount
 
-	for _, chain := range evmChains {
+	for _, chain := range chains {
 		logger.Info("Fetching accounts for chain: %s", chain.Name)
 
 		endpoint := fmt.Sprintf("/blockchains/%s/accounts", chain.ID)
@@ -76,9 +89,11 @@ func (s *BlockchainService) FetchAccounts() ([]models.ChainAccount, error) {
 
 		for _, account := range response.Result {
 			chainAccount := models.ChainAccount{
-				Address:  account.Address,
-				EvmChain: chain.EvmChainName,
-				ChainID:  chain.ID,
+				Address:    account.Address,
+				EvmChain:   chain.EvmChainName,
+				ChainID:    chain.ID,
+				Blockchain: chain.ID,
+				ChainType:  chain.Type,
 			}
 			allAccounts = append(allAccounts, chainAccount)
 		}
@@ -87,6 +102,16 @@ func (s *BlockchainService) FetchAccounts() ([]models.ChainAccount, error) {
 	}
 
 	return allAccounts, nil
+}
+
+// FetchAccounts retrieves accounts for all EVM chains
+func (s *BlockchainService) FetchAccounts() ([]models.ChainAccount, error) {
+	evmChains, err := s.GetSupportedEvmChains()
+	if err != nil {
+		return nil, err
+	}
+
+	return s.FetchAccountsForChains(evmChains)
 }
 
 // FetchEvmTransactions fetches EVM transactions for all accounts
@@ -204,6 +229,174 @@ func (s *BlockchainService) DecodeEvmTransactions() error {
 		decodedTransactions := response.Result.DecodedTxNumber[chainName]
 		if decodedTransactions > 0 {
 			logger.Info("Decoded %d transactions for chain %s", decodedTransactions, chainName)
+		}
+	}
+
+	return nil
+}
+
+// TokenDetectionChain holds a chain's ID, name, and the addresses to detect tokens for
+type TokenDetectionChain struct {
+	ChainID   string
+	ChainName string
+	Addresses []string
+}
+
+// GetTokenDetectionChains returns EVM chains with their addresses for token detection
+func (s *BlockchainService) GetTokenDetectionChains() ([]TokenDetectionChain, error) {
+	evmChains, err := s.GetSupportedEvmChains()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get EVM chains for token detection: %w", err)
+	}
+
+	accounts, err := s.FetchAccountsForChains(evmChains)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch accounts for token detection: %w", err)
+	}
+
+	// Build lookup for chain ID -> chain info
+	chainInfo := make(map[string]models.Blockchain)
+	for _, chain := range evmChains {
+		chainInfo[chain.ID] = chain
+	}
+
+	// Group addresses by chain ID, skipping excluded chains
+	addressesByChain := make(map[string][]string)
+	for _, acc := range accounts {
+		chain := chainInfo[acc.ChainID]
+		if chain.EvmChainName == "" || isChainExcluded(chain.EvmChainName) {
+			continue
+		}
+		addressesByChain[acc.ChainID] = append(addressesByChain[acc.ChainID], acc.Address)
+	}
+
+	var result []TokenDetectionChain
+	for chainID, addresses := range addressesByChain {
+		result = append(result, TokenDetectionChain{
+			ChainID:   chainID,
+			ChainName: chainInfo[chainID].Name,
+			Addresses: addresses,
+		})
+	}
+
+	// Sort for consistent ordering
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ChainName < result[j].ChainName
+	})
+
+	return result, nil
+}
+
+// DetectTokensForAddress runs token detection on a single chain for a single address
+func (s *BlockchainService) DetectTokensForAddress(chainID string, address string) error {
+	endpoint := fmt.Sprintf("/blockchains/%s/tokens/detect", chainID)
+	requestData := models.TokenDetectRequest{
+		Addresses: []string{address},
+	}
+
+	_, err := async.Post[json.RawMessage](s.asyncClient, endpoint, requestData)
+	if err != nil {
+		return fmt.Errorf("failed to detect tokens for %s on %s: %w", address, chainID, err)
+	}
+
+	return nil
+}
+
+// DetectTokens runs token detection on EVM chains (excluding avalanche)
+func (s *BlockchainService) DetectTokens() error {
+	chains, err := s.GetTokenDetectionChains()
+	if err != nil {
+		return err
+	}
+
+	for _, chain := range chains {
+		for _, address := range chain.Addresses {
+			logger.Info("Detecting tokens for %s on %s", address, chain.ChainName)
+
+			if err := s.DetectTokensForAddress(chain.ChainID, address); err != nil {
+				logger.Error("Failed to detect tokens for %s on %s: %v", address, chain.ChainName, err)
+				continue
+			}
+
+			logger.Info("Token detection completed for %s on %s", address, chain.ChainName)
+		}
+	}
+
+	return nil
+}
+
+// FetchNonEvmTransactions fetches transactions for non-EVM chain types
+func (s *BlockchainService) FetchNonEvmTransactions() error {
+	for _, chainType := range nonEvmChainTypes {
+		chains, err := s.GetSupportedChainsByType(chainType)
+		if err != nil {
+			logger.Error("Failed to get supported %s chains: %v", chainType, err)
+			continue
+		}
+
+		if len(chains) == 0 {
+			continue
+		}
+
+		accounts, err := s.FetchAccountsForChains(chains)
+		if err != nil {
+			logger.Error("Failed to fetch accounts for %s chains: %v", chainType, err)
+			continue
+		}
+
+		logger.Info("Fetching %s transactions for %d accounts", chainType, len(accounts))
+
+		for _, account := range accounts {
+			requestData := models.TransactionsRequest{
+				Accounts: []models.TransactionAccount{
+					{
+						Address:    account.Address,
+						Blockchain: account.Blockchain,
+					},
+				},
+			}
+
+			_, err := async.Post[bool](s.asyncClient, "/blockchains/transactions", requestData)
+			if err != nil {
+				logger.Error("Failed to fetch transactions for %s on %s: %v",
+					account.Address, account.Blockchain, err)
+				continue
+			}
+		}
+
+		logger.Info("Completed %s transaction fetch", chainType)
+	}
+
+	return nil
+}
+
+// DecodeNonEvmTransactions decodes transactions for non-EVM chain types that support decoding
+func (s *BlockchainService) DecodeNonEvmTransactions() error {
+	for _, chainType := range nonEvmChainTypes {
+		if nonDecodableChainTypes[chainType] {
+			continue
+		}
+
+		chains, err := s.GetSupportedChainsByType(chainType)
+		if err != nil {
+			logger.Error("Failed to get supported %s chains for decoding: %v", chainType, err)
+			continue
+		}
+
+		for _, chain := range chains {
+			logger.Debug("Decoding %s transactions for chain %s", chainType, chain.ID)
+
+			requestData := models.TransactionDecodeRequest{
+				Chain: chain.ID,
+			}
+
+			_, err := async.Post[models.EvmTransactionDecodeResult](s.asyncClient, "/blockchains/transactions/decode", requestData)
+			if err != nil {
+				logger.Error("Failed to decode transactions for chain %s: %v", chain.ID, err)
+				continue
+			}
+
+			logger.Info("Decoded transactions for %s chain %s", chainType, chain.ID)
 		}
 	}
 

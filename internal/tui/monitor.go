@@ -21,10 +21,13 @@ const (
 	StageSnapshot          SyncStage = "snapshot"
 	StageTrades            SyncStage = "trades"
 	StageEvents            SyncStage = "events"
+	StageTokenDetection    SyncStage = "token-detect"
 	StageTransactions      SyncStage = "transactions"
 	StageTransactionsFetch SyncStage = "fetch-txs"
+	StageNonEvmTxs         SyncStage = "non-evm-txs"
 	StageDecode            SyncStage = "decode"
 	StageDecodeChains      SyncStage = "decode-chains"
+	StageNonEvmDecode      SyncStage = "non-evm-decode"
 	StageLogout            SyncStage = "logout"
 	StageComplete          SyncStage = "complete"
 )
@@ -358,14 +361,20 @@ func getStageIcon(stage SyncStage) string {
 		return "💱"
 	case StageEvents:
 		return "📡"
+	case StageTokenDetection:
+		return "🔎"
 	case StageTransactions:
 		return "📊"
 	case StageTransactionsFetch:
 		return "🔄"
+	case StageNonEvmTxs:
+		return "🌐"
 	case StageDecode:
 		return "🔍"
 	case StageDecodeChains:
 		return "⚙️"
+	case StageNonEvmDecode:
+		return "🔓"
 	case StageLogout:
 		return "🚪"
 	case StageComplete:

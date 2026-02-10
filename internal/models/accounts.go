@@ -7,11 +7,13 @@ type Account struct {
 }
 
 type ChainAccount struct {
-	ChainID  string
-	EvmChain string
-	Address  string
-	Label    *string
-	Tags     []string
+	ChainID    string
+	EvmChain   string
+	Blockchain string // Chain ID used in generic /blockchains/transactions
+	ChainType  string // "evm", "evmlike", "bitcoin", "solana", "substrate"
+	Address    string
+	Label      *string
+	Tags       []string
 }
 
 // AccountsResponse represents the API response for accounts

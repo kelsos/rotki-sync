@@ -1,5 +1,14 @@
 package models
 
+// Chain type constants
+const (
+	ChainTypeEvm       = "evm"
+	ChainTypeEvmLike   = "evmlike"
+	ChainTypeBitcoin   = "bitcoin"
+	ChainTypeSolana    = "solana"
+	ChainTypeSubstrate = "substrate"
+)
+
 // Blockchain represents a blockchain supported by the API
 type Blockchain struct {
 	ID           string `json:"id" validate:"required"`
@@ -60,3 +69,24 @@ type EventsQueryPayload struct {
 }
 
 type EventsQueryResponse = APIResponse[bool]
+
+// TransactionAccount represents an account for generic transaction fetching
+type TransactionAccount struct {
+	Address    string `json:"address"`
+	Blockchain string `json:"blockchain"`
+}
+
+// TransactionsRequest represents a request to fetch transactions via generic endpoint
+type TransactionsRequest struct {
+	Accounts []TransactionAccount `json:"accounts"`
+}
+
+// TransactionDecodeRequest represents a request to decode transactions via generic endpoint
+type TransactionDecodeRequest struct {
+	Chain string `json:"chain"`
+}
+
+// TokenDetectRequest represents a request to detect tokens on a chain
+type TokenDetectRequest struct {
+	Addresses []string `json:"addresses"`
+}

@@ -44,6 +44,11 @@ func (s *SyncService) ProcessUserData(username string) error {
 		logger.Error("Failed to perform snapshot: %v", err)
 	}
 
+	// Detect tokens on EVM chains
+	if err := s.blockchain.DetectTokens(); err != nil {
+		logger.Error("Failed to detect tokens: %v", err)
+	}
+
 	// Fetch exchange trades
 	if err := s.exchange.GetExchangeTrades(); err != nil {
 		logger.Error("Failed fetch exchange trades: %v", err)
@@ -59,9 +64,19 @@ func (s *SyncService) ProcessUserData(username string) error {
 		logger.Error("Failed to fetch EVM transactions: %v", err)
 	}
 
+	// Fetch non-EVM transactions
+	if err := s.blockchain.FetchNonEvmTransactions(); err != nil {
+		logger.Error("Failed to fetch non-EVM transactions: %v", err)
+	}
+
 	// Decode EVM transactions
 	if err := s.blockchain.DecodeEvmTransactions(); err != nil {
 		logger.Error("Failed to decode EVM transactions: %v", err)
+	}
+
+	// Decode non-EVM transactions
+	if err := s.blockchain.DecodeNonEvmTransactions(); err != nil {
+		logger.Error("Failed to decode non-EVM transactions: %v", err)
 	}
 
 	logger.Info("Completed data processing for user: %s", username)
@@ -97,11 +112,11 @@ func (s *SyncService) GetUsers() ([]string, error) {
 
 // ProcessUsersWithCallback processes all users with callbacks for monitoring
 func (s *SyncService) ProcessUsersWithCallback(
-	onLogin func(username string) error,
+	onLoginResult func(username string, loginErr error),
 	processFunc func(username string) error,
 	onLogout func(username string) error,
 ) error {
-	return s.user.ProcessUsersWithCallback(onLogin, processFunc, onLogout)
+	return s.user.ProcessUsersWithCallback(onLoginResult, processFunc, onLogout)
 }
 
 // PerformSnapshotIfNeeded performs a blockchain snapshot if needed
@@ -142,6 +157,31 @@ func (s *SyncService) FetchAccounts() ([]interface{}, error) {
 		result[i] = acc
 	}
 	return result, nil
+}
+
+// DetectTokens runs token detection on EVM chains
+func (s *SyncService) DetectTokens() error {
+	return s.blockchain.DetectTokens()
+}
+
+// GetTokenDetectionChains returns EVM chains with addresses for token detection
+func (s *SyncService) GetTokenDetectionChains() ([]TokenDetectionChain, error) {
+	return s.blockchain.GetTokenDetectionChains()
+}
+
+// DetectTokensForAddress runs token detection for a single address on a chain
+func (s *SyncService) DetectTokensForAddress(chainID string, address string) error {
+	return s.blockchain.DetectTokensForAddress(chainID, address)
+}
+
+// FetchNonEvmTransactions fetches transactions for non-EVM chains
+func (s *SyncService) FetchNonEvmTransactions() error {
+	return s.blockchain.FetchNonEvmTransactions()
+}
+
+// DecodeNonEvmTransactions decodes transactions for non-EVM chains
+func (s *SyncService) DecodeNonEvmTransactions() error {
+	return s.blockchain.DecodeNonEvmTransactions()
 }
 
 // GetSupportedEvmChains retrieves supported EVM chains
