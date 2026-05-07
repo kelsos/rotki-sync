@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +19,97 @@ import (
 	"github.com/kelsos/rotki-sync/internal/utils"
 )
 
+// runSync wires up rotki-core and runs the sync flow with or without the TUI.
+func runSync(cfg *config.Config, disableTUI, skipConfirm bool) {
+	if !disableTUI {
+		if err := logger.InitFileOnly(); err != nil {
+			logger.Init()
+			logger.Error("Failed to initialize file logging, using console: %v", err)
+		}
+		defer logger.Close()
+	} else {
+		logger.Init()
+	}
+
+	cfg.SetBaseURL()
+
+	if err := cfg.Validate(); err != nil {
+		logger.Fatal("Invalid configuration: %v", err)
+	}
+
+	rotki, err := process.StartRotkiCore(cfg.BinPath, cfg.Port, cfg.APIReadyTimeout, cfg.DataDir)
+	if err != nil {
+		logger.Fatal("Failed to start rotki-core: %v", err)
+	}
+
+	syncService := services.NewSyncService(cfg)
+
+	if !syncService.WaitForAPIReady() {
+		logger.Fatal("API failed to become ready")
+	}
+
+	if !confirmRotkiVersion(syncService, skipConfirm) {
+		logger.Info("Sync canceled by user")
+		if err := rotki.Stop(); err != nil {
+			logger.Error("Failed to stop rotki-core: %v", err)
+		}
+		return
+	}
+
+	if !disableTUI {
+		monitor := tui.NewSyncMonitor(syncService)
+		if err := monitor.Start(); err != nil {
+			logger.Fatal("Failed to start TUI monitor: %v", err)
+		}
+		if err := monitor.Run(); err != nil {
+			logger.Error("Error running TUI monitor: %v", err)
+		}
+	} else {
+		if err := syncService.ProcessAllUsers(); err != nil {
+			logger.Error("Error processing users: %v", err)
+		}
+		logger.Info("All users processed successfully")
+	}
+
+	defer syncService.Cleanup()
+
+	if err := rotki.WaitForExit(); err != nil {
+		logger.Error("Error waiting for rotki-core to exit: %v", err)
+	}
+}
+
+// confirmRotkiVersion prompts the user to confirm the running rotki-core
+// version. Returns true when the user accepts. When skipPrompt is true the
+// version is logged and the function returns true without asking.
+func confirmRotkiVersion(syncService *services.SyncService, skipPrompt bool) bool {
+	info, err := syncService.GetInfo()
+	if err != nil {
+		logger.Error("Failed to fetch rotki-core version: %v", err)
+		return false
+	}
+
+	fmt.Printf("rotki-core version: %s\n", info.Version.OurVersion)
+	fmt.Printf("data directory:     %s\n", info.DataDirectory)
+
+	if skipPrompt {
+		return true
+	}
+
+	fmt.Print("Continue sync against this backend? [y/N]: ")
+	reader := bufio.NewReader(os.Stdin)
+	answer, err := reader.ReadString('\n')
+	if err != nil {
+		logger.Error("Failed to read confirmation: %v", err)
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 func main() {
 	utils.LoadEnvironment()
 
@@ -27,75 +122,14 @@ func main() {
 
 	var backupDir string
 	var disableTUI bool
+	var skipConfirm bool
 
 	rootCmd := &cobra.Command{
 		Use:   "rotki-sync",
 		Short: "A CLI tool for syncing rotki data",
 		Long:  `rotki-sync is a CLI tool for syncing rotki data from various sources.`,
 		Run: func(cmd *cobra.Command, args []string) {
-			// Initialize logger based on TUI mode
-			if !disableTUI {
-				// Use file-only logging for TUI mode
-				if err := logger.InitFileOnly(); err != nil {
-					// Fallback to console logger if file init fails
-					logger.Init()
-					logger.Error("Failed to initialize file logging, using console: %v", err)
-				}
-				// Ensure we close the log file on exit
-				defer logger.Close()
-			} else {
-				// Use console logging for non-TUI mode
-				logger.Init()
-			}
-
-			// Update config with flag values
-			cfg.SetBaseURL()
-
-			// Validate configuration
-			if err := cfg.Validate(); err != nil {
-				logger.Fatal("Invalid configuration: %v", err)
-			}
-
-			// Start rotki-core process
-			rotki, err := process.StartRotkiCore(cfg.BinPath, cfg.Port, cfg.APIReadyTimeout, cfg.DataDir)
-			if err != nil {
-				logger.Fatal("Failed to start rotki-core: %v", err)
-			}
-
-			// Initialize sync service with the configuration
-			syncService := services.NewSyncService(cfg)
-
-			// Wait for API to be ready
-			if !syncService.WaitForAPIReady() {
-				logger.Fatal("API failed to become ready")
-			}
-
-			// Process users with or without TUI (TUI is default)
-			if !disableTUI {
-				// Run with TUI monitoring (default)
-				monitor := tui.NewSyncMonitor(syncService)
-				if err := monitor.Start(); err != nil {
-					logger.Fatal("Failed to start TUI monitor: %v", err)
-				}
-
-				if err := monitor.Run(); err != nil {
-					logger.Error("Error running TUI monitor: %v", err)
-				}
-			} else {
-				// Process all users without TUI (when --no-tui flag is used)
-				if err := syncService.ProcessAllUsers(); err != nil {
-					logger.Error("Error processing users: %v", err)
-				}
-				logger.Info("All users processed successfully")
-			}
-
-			// Cleanup resources
-			defer syncService.Cleanup()
-
-			// Wait for rotki-core to exit
-			if err := rotki.WaitForExit(); err != nil {
-				logger.Error("Error waiting for rotki-core to exit: %v", err)
-			}
+			runSync(cfg, disableTUI, skipConfirm)
 		},
 	}
 
@@ -137,6 +171,7 @@ func main() {
 	rootCmd.Flags().IntVarP(&retryDelayMs, "retry-delay", "d", int(cfg.RetryDelay/time.Millisecond), "Delay between retries in milliseconds")
 	rootCmd.Flags().IntVarP(&cfg.APIReadyTimeout, "api-ready-timeout", "t", cfg.APIReadyTimeout, "Maximum attempts to check API readiness")
 	rootCmd.Flags().BoolVarP(&disableTUI, "no-tui", "", false, "Disable interactive TUI monitoring mode")
+	rootCmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "Skip the rotki-core version confirmation prompt")
 
 	// Update retry delay from milliseconds to duration
 	rootCmd.PreRun = func(cmd *cobra.Command, args []string) {
