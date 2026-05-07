@@ -9,9 +9,12 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/kelsos/rotki-sync/internal/logger"
 )
+
+// ProgressFunc is called once per file added to a backup, with the running
+// count, the total number of files to add, and the file's relative path. It is
+// invoked before the file's contents are written.
+type ProgressFunc func(current, total int, relPath string)
 
 // ExpandPath expands ~ to the user's home directory
 func ExpandPath(path string) (string, error) {
@@ -79,8 +82,10 @@ func GetDefaultBackupDir() (string, error) {
 	return backupDir, nil
 }
 
-// CreateBackup creates a backup of the Rotki data directory
-func CreateBackup(dataDir, backupDir string) (string, error) {
+// CreateBackup creates a backup of the Rotki data directory. If progress is
+// non-nil it is invoked before writing each included file so the caller can
+// render UI feedback.
+func CreateBackup(dataDir, backupDir string, progress ProgressFunc) (string, error) {
 	if dataDir == "" {
 		var err error
 		dataDir, err = GetDefaultRotkiDataDir()
@@ -109,10 +114,14 @@ func CreateBackup(dataDir, backupDir string) (string, error) {
 		}
 	}
 
+	totalFiles, err := countBackupFiles(dataDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to scan data directory: %w", err)
+	}
+
 	timestamp := filepath.Base(time.Now().Format("20060102_150405"))
 	backupFile := filepath.Join(backupDir, fmt.Sprintf("rotki_backup_%s.zip", timestamp))
 
-	// Create a new zip file
 	zipFile, err := os.Create(backupFile)
 	if err != nil {
 		return "", fmt.Errorf("failed to create backup file: %w", err)
@@ -122,22 +131,54 @@ func CreateBackup(dataDir, backupDir string) (string, error) {
 	zipWriter := zip.NewWriter(zipFile)
 	defer zipWriter.Close()
 
-	// Walk through the data directory and add files to the zip
+	current := 0
 	err = filepath.Walk(dataDir, func(path string, info os.FileInfo, err error) error {
-		return AddToZip(path, info, err, dataDir, zipWriter)
+		return addToZip(path, info, err, dataDir, zipWriter, func(relPath string) {
+			current++
+			if progress != nil {
+				progress(current, totalFiles, relPath)
+			}
+		})
 	})
-
 	if err != nil {
 		return "", fmt.Errorf("failed to create backup: %w", err)
 	}
 
-	logger.Info("Backup created successfully: %s", backupFile)
 	return backupFile, nil
 }
 
-func AddToZip(path string, info os.FileInfo, err error, dataDir string, zipWriter *zip.Writer) error {
-	if err != nil {
-		return err
+// countBackupFiles returns the number of regular files under dataDir that
+// would be included by ShouldIncludeInBackup.
+func countBackupFiles(dataDir string) (int, error) {
+	count := 0
+	err := filepath.Walk(dataDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == dataDir {
+			return nil
+		}
+		relPath, err := filepath.Rel(dataDir, path)
+		if err != nil {
+			return err
+		}
+		if !ShouldIncludeInBackup(relPath, info.IsDir()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.IsDir() {
+			count++
+		}
+		return nil
+	})
+	return count, err
+}
+
+func addToZip(path string, info os.FileInfo, walkErr error, dataDir string, zipWriter *zip.Writer, onFile func(relPath string)) error {
+	if walkErr != nil {
+		return walkErr
 	}
 
 	if path == dataDir {
@@ -151,16 +192,18 @@ func AddToZip(path string, info os.FileInfo, err error, dataDir string, zipWrite
 
 	if !ShouldIncludeInBackup(relPath, info.IsDir()) {
 		if info.IsDir() {
-			logger.Debug("Skipping directory: %s", relPath)
 			return filepath.SkipDir
 		}
-		logger.Debug("Skipping file: %s", relPath)
 		return nil
 	}
 
 	if info.IsDir() {
 		_, err = zipWriter.Create(relPath + "/")
 		return err
+	}
+
+	if onFile != nil {
+		onFile(relPath)
 	}
 
 	header, err := zip.FileInfoHeader(info)
@@ -182,12 +225,10 @@ func AddToZip(path string, info os.FileInfo, err error, dataDir string, zipWrite
 	}
 	defer file.Close()
 
-	_, err = io.Copy(writer, file)
-	if err != nil {
+	if _, err := io.Copy(writer, file); err != nil {
 		return fmt.Errorf("failed to copy file contents: %w", err)
 	}
 
-	logger.Debug("Added file to backup: %s", relPath)
 	return nil
 }
 

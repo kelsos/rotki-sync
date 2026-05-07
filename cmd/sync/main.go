@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/kelsos/rotki-sync/internal/backup"
@@ -18,6 +19,31 @@ import (
 	"github.com/kelsos/rotki-sync/internal/tui"
 	"github.com/kelsos/rotki-sync/internal/utils"
 )
+
+// backupProgressPrinter returns a ProgressFunc suitable for the backup
+// command. When stderr is a TTY it renders a single overwriting line; on a
+// non-interactive stderr it returns nil so output stays clean for logs.
+func backupProgressPrinter() backup.ProgressFunc {
+	if !isatty.IsTerminal(os.Stderr.Fd()) {
+		return nil
+	}
+	return func(current, total int, relPath string) {
+		// Truncate long paths so the line stays on one row.
+		const maxPath = 60
+		display := relPath
+		if len(display) > maxPath {
+			display = "…" + display[len(display)-maxPath+1:]
+		}
+		percent := 0
+		if total > 0 {
+			percent = current * 100 / total
+		}
+		fmt.Fprintf(os.Stderr, "\r\033[K[%d/%d %3d%%] %s", current, total, percent, display)
+		if current == total {
+			fmt.Fprintln(os.Stderr)
+		}
+	}
+}
 
 // runSync wires up rotki-core and runs the sync flow with or without the TUI.
 func runSync(cfg *config.Config, disableTUI, skipConfirm bool) {
@@ -152,7 +178,8 @@ func main() {
 		Long:  `Create a backup of rotki's data directory, including specific files and directories.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			logger.Init() // Always use console for subcommands
-			backupFile, err := backup.CreateBackup(cfg.DataDir, backupDir)
+			progress := backupProgressPrinter()
+			backupFile, err := backup.CreateBackup(cfg.DataDir, backupDir, progress)
 			if err != nil {
 				logger.Fatal("Failed to create backup: %v", err)
 			}
