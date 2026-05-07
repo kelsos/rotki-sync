@@ -87,4 +87,14 @@ type TransactionDecodeRequest struct {
 // TokenDetectRequest represents a request to detect tokens on a chain
 type TokenDetectRequest struct {
 	Addresses []string `json:"addresses"`
+	OnlyCache bool     `json:"only_cache,omitempty"`
 }
+
+// TokenDetectAddressInfo holds cached token detection info for a single address
+type TokenDetectAddressInfo struct {
+	Tokens              []string `json:"tokens"`
+	LastUpdateTimestamp int64    `json:"last_update_timestamp"`
+}
+
+// TokenDetectResponse maps an address to its cached token detection info
+type TokenDetectResponse map[string]TokenDetectAddressInfo

@@ -279,6 +279,21 @@ func (s *BlockchainService) GetTokenDetectionChains() ([]TokenDetectionChain, er
 	return result, nil
 }
 
+// tokenDetectionMaxAge is the maximum age of a cached token detection before
+// a fresh detection is triggered.
+const tokenDetectionMaxAge = 5 * 24 * time.Hour
+
+// shouldSkipTokenDetection reports whether token detection can be skipped for
+// an address based on its cached info. It returns the cached entry's age so
+// callers can include it in skip logs.
+func shouldSkipTokenDetection(info models.TokenDetectAddressInfo, now time.Time, maxAge time.Duration) (bool, time.Duration) {
+	if info.LastUpdateTimestamp <= 0 {
+		return false, 0
+	}
+	age := now.Sub(time.Unix(info.LastUpdateTimestamp, 0))
+	return age < maxAge, age
+}
+
 // DetectTokensForAddress runs token detection on a single chain for a single address
 func (s *BlockchainService) DetectTokensForAddress(chainID string, address string) error {
 	endpoint := fmt.Sprintf("/blockchains/%s/tokens/detect", chainID)
@@ -294,7 +309,26 @@ func (s *BlockchainService) DetectTokensForAddress(chainID string, address strin
 	return nil
 }
 
-// DetectTokens runs token detection on EVM chains (excluding avalanche)
+// GetCachedTokenDetection fetches cached token detection info for the given
+// addresses on a chain without triggering a fresh detection.
+func (s *BlockchainService) GetCachedTokenDetection(chainID string, addresses []string) (models.TokenDetectResponse, error) {
+	endpoint := fmt.Sprintf("/blockchains/%s/tokens/detect", chainID)
+	requestData := models.TokenDetectRequest{
+		Addresses: addresses,
+		OnlyCache: true,
+	}
+
+	resp, err := async.Post[models.TokenDetectResponse](s.asyncClient, endpoint, requestData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cached token detection on %s: %w", chainID, err)
+	}
+
+	return resp.Result, nil
+}
+
+// DetectTokens runs token detection on EVM chains (excluding avalanche).
+// Per-address detection is skipped when a cached detection younger than
+// tokenDetectionMaxAge exists.
 func (s *BlockchainService) DetectTokens() error {
 	chains, err := s.GetTokenDetectionChains()
 	if err != nil {
@@ -302,7 +336,19 @@ func (s *BlockchainService) DetectTokens() error {
 	}
 
 	for _, chain := range chains {
+		cached, err := s.GetCachedTokenDetection(chain.ChainID, chain.Addresses)
+		if err != nil {
+			logger.Error("Failed to query token detection cache on %s, will run detection: %v", chain.ChainName, err)
+			cached = nil
+		}
+
 		for _, address := range chain.Addresses {
+			if skip, age := shouldSkipTokenDetection(cached[address], time.Now(), tokenDetectionMaxAge); skip {
+				logger.Info("Skipping token detection for %s on %s: last detection %s ago (< %s)",
+					address, chain.ChainName, age.Round(time.Hour), tokenDetectionMaxAge)
+				continue
+			}
+
 			logger.Info("Detecting tokens for %s on %s", address, chain.ChainName)
 
 			if err := s.DetectTokensForAddress(chain.ChainID, address); err != nil {
