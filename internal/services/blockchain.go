@@ -115,7 +115,7 @@ func (s *BlockchainService) FetchAccounts() ([]models.ChainAccount, error) {
 }
 
 // FetchEvmTransactions fetches EVM transactions for all accounts
-func (s *BlockchainService) FetchEvmTransactions(fromTimestamp, toTimestamp int64) error {
+func (s *BlockchainService) FetchEvmTransactions() error {
 	logger.Info("Starting EVM transaction fetch...")
 
 	chainAccounts, err := s.FetchAccounts()
@@ -142,14 +142,8 @@ func (s *BlockchainService) FetchEvmTransactions(fromTimestamp, toTimestamp int6
 			return accounts[i].Address < accounts[j].Address
 		})
 
-		// Adjust timestamps to be safe (back 1 day from now)
-		chainFromTimestamp := fromTimestamp
-		if chainFromTimestamp == 0 {
-			chainFromTimestamp = time.Now().AddDate(0, 0, -1).Unix()
-		}
-
 		for _, account := range accounts {
-			err := s.GetAccountTransactions(account, chainFromTimestamp, toTimestamp)
+			err := s.GetAccountTransactions(account)
 			if err != nil {
 				logger.Error("Failed to get transactions for account %s on chain %s: %v",
 					account.Address, account.EvmChain, err)
@@ -163,7 +157,7 @@ func (s *BlockchainService) FetchEvmTransactions(fromTimestamp, toTimestamp int6
 }
 
 // GetAccountTransactions fetches transactions for a specific account
-func (s *BlockchainService) GetAccountTransactions(account models.ChainAccount, fromTimestamp, toTimestamp int64) error {
+func (s *BlockchainService) GetAccountTransactions(account models.ChainAccount) error {
 	logger.Debug("Fetching transactions for %s (%s)", account.EvmChain, account.Address)
 
 	transactionAccount := models.EvmTransactionAccount{
@@ -172,9 +166,7 @@ func (s *BlockchainService) GetAccountTransactions(account models.ChainAccount, 
 	}
 
 	requestData := models.EvmTransactionsRequest{
-		Accounts:      []models.EvmTransactionAccount{transactionAccount},
-		FromTimestamp: fromTimestamp,
-		ToTimestamp:   toTimestamp,
+		Accounts: []models.EvmTransactionAccount{transactionAccount},
 	}
 
 	// Use async for fetching EVM transactions

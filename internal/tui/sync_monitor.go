@@ -297,7 +297,7 @@ func (sm *SyncMonitor) FetchEvmTransactionsWithProgress(username string) error {
 	sm.UpdateStage(username, StageTransactions, 0.55, "EVM transactions fetched")
 	sm.AddLog(fmt.Sprintf("✅ EVM transactions fetched for %s", username))
 
-	return sm.syncService.FetchEvmTransactions(0, 0)
+	return sm.syncService.FetchEvmTransactions()
 }
 
 func (sm *SyncMonitor) DecodeEvmTransactionsWithProgress(username string) error {

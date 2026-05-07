@@ -60,7 +60,7 @@ func (s *SyncService) ProcessUserData(username string) error {
 	}
 
 	// Fetch EVM transactions
-	if err := s.blockchain.FetchEvmTransactions(0, 0); err != nil {
+	if err := s.blockchain.FetchEvmTransactions(); err != nil {
 		logger.Error("Failed to fetch EVM transactions: %v", err)
 	}
 
@@ -135,8 +135,8 @@ func (s *SyncService) FetchOnlineEvents() error {
 }
 
 // FetchEvmTransactions fetches EVM transactions
-func (s *SyncService) FetchEvmTransactions(fromTimestamp, toTimestamp int64) error {
-	return s.blockchain.FetchEvmTransactions(fromTimestamp, toTimestamp)
+func (s *SyncService) FetchEvmTransactions() error {
+	return s.blockchain.FetchEvmTransactions()
 }
 
 // DecodeEvmTransactions decodes EVM transactions

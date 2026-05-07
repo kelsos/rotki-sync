@@ -30,9 +30,7 @@ type EvmTransactionAccount struct {
 
 // EvmTransactionsRequest represents a request to fetch EVM transactions
 type EvmTransactionsRequest struct {
-	Accounts      []EvmTransactionAccount `json:"accounts" validate:"required"`
-	FromTimestamp int64                   `json:"from_timestamp" validate:"required"`
-	ToTimestamp   int64                   `json:"to_timestamp" validate:"required"`
+	Accounts []EvmTransactionAccount `json:"accounts" validate:"required"`
 }
 
 // EvmTransactionsResponse represents the API response for EVM transactions
