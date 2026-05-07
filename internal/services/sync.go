@@ -1,10 +1,13 @@
 package services
 
 import (
+	"fmt"
+
 	"github.com/kelsos/rotki-sync/internal/async"
 	"github.com/kelsos/rotki-sync/internal/client"
 	"github.com/kelsos/rotki-sync/internal/config"
 	"github.com/kelsos/rotki-sync/internal/logger"
+	"github.com/kelsos/rotki-sync/internal/models"
 )
 
 // SyncService orchestrates the data synchronization process
@@ -91,6 +94,16 @@ func (s *SyncService) ProcessAllUsers() error {
 // WaitForAPIReady waits for the API to become ready
 func (s *SyncService) WaitForAPIReady() bool {
 	return s.client.WaitForAPIReady()
+}
+
+// GetInfo fetches general information about the running rotki backend,
+// including the version and data directory.
+func (s *SyncService) GetInfo() (*models.Info, error) {
+	var response models.InfoResponse
+	if err := s.client.Get("/info", &response); err != nil {
+		return nil, fmt.Errorf("failed to get rotki info: %w", err)
+	}
+	return &response.Result, nil
 }
 
 // GetConfig returns the current configuration

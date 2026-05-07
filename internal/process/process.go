@@ -76,6 +76,16 @@ func StartRotkiCore(binPath string, port int, apiReadyTimeout int, dataDir strin
 	return rotki, nil
 }
 
+// Stop terminates the rotki-core process. Returns nil if the process is not
+// running.
+func (r *RotkiProcess) Stop() error {
+	if r.Process == nil {
+		return nil
+	}
+	logger.Info("Stopping rotki-core...")
+	return r.Process.Kill()
+}
+
 // WaitForExit waits for the rotki-core process to exit or for a signal to terminate it
 func (r *RotkiProcess) WaitForExit() error {
 	// Set up a channel to handle signals
