@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/kelsos/rotki-sync/internal/async"
 	"github.com/kelsos/rotki-sync/internal/client"
@@ -185,6 +186,18 @@ func (s *SyncService) GetTokenDetectionChains() ([]TokenDetectionChain, error) {
 // DetectTokensForAddress runs token detection for a single address on a chain
 func (s *SyncService) DetectTokensForAddress(chainID string, address string) error {
 	return s.blockchain.DetectTokensForAddress(chainID, address)
+}
+
+// GetCachedTokenDetection fetches cached token detection info for the given
+// addresses on a chain without triggering a fresh detection.
+func (s *SyncService) GetCachedTokenDetection(chainID string, addresses []string) (models.TokenDetectResponse, error) {
+	return s.blockchain.GetCachedTokenDetection(chainID, addresses)
+}
+
+// ShouldSkipTokenDetection reports whether token detection can be skipped for
+// an address based on its cached info.
+func (s *SyncService) ShouldSkipTokenDetection(info models.TokenDetectAddressInfo) (bool, time.Duration) {
+	return s.blockchain.ShouldSkipTokenDetection(info)
 }
 
 // FetchNonEvmTransactions fetches transactions for non-EVM chains

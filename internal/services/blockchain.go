@@ -294,6 +294,13 @@ func shouldSkipTokenDetection(info models.TokenDetectAddressInfo, now time.Time,
 	return age < maxAge, age
 }
 
+// ShouldSkipTokenDetection reports whether token detection can be skipped for
+// an address based on its cached info, using the package's max-age threshold.
+// It returns the cached entry's age so callers can include it in skip logs.
+func (s *BlockchainService) ShouldSkipTokenDetection(info models.TokenDetectAddressInfo) (bool, time.Duration) {
+	return shouldSkipTokenDetection(info, time.Now(), tokenDetectionMaxAge)
+}
+
 // DetectTokensForAddress runs token detection on a single chain for a single address
 func (s *BlockchainService) DetectTokensForAddress(chainID string, address string) error {
 	endpoint := fmt.Sprintf("/blockchains/%s/tokens/detect", chainID)

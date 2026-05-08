@@ -226,9 +226,24 @@ func (sm *SyncMonitor) DetectTokensWithProgress(username string) error {
 
 	completed := 0
 	for _, chain := range chains {
+		cached, err := sm.syncService.GetCachedTokenDetection(chain.ChainID, chain.Addresses)
+		if err != nil {
+			logger.Error("Failed to query token detection cache on %s, will run detection: %v", chain.ChainName, err)
+			cached = nil
+		}
+
 		for _, address := range chain.Addresses {
 			completed++
 			progress := 0.10 + (0.10 * float64(completed) / float64(totalPairs))
+
+			if skip, age := sm.syncService.ShouldSkipTokenDetection(cached[address]); skip {
+				sm.UpdateStage(username, StageTokenDetection, progress,
+					fmt.Sprintf("Skipping %s - %s (cached %s ago) (%d/%d)",
+						chain.ChainName, truncateAddress(address), age.Round(time.Hour), completed, totalPairs))
+				sm.AddLog(fmt.Sprintf("⏭️ Skipping token detection for %s on %s (cached %s ago)",
+					truncateAddress(address), chain.ChainName, age.Round(time.Hour)))
+				continue
+			}
 
 			sm.UpdateStage(username, StageTokenDetection, progress,
 				fmt.Sprintf("Detecting tokens on %s - %s (%d/%d)",
