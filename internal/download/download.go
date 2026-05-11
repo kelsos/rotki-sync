@@ -1,6 +1,7 @@
 package download
 
 import (
+	"archive/zip"
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,8 @@ const (
 	Darwin  = "darwin"
 	Linux   = "linux"
 	Windows = "windows"
+	// InstallDirName is the folder inside BinDir that holds the extracted onedir bundle
+	InstallDirName = "rotki-core"
 )
 
 // GithubAsset represents an asset in a GitHub release
@@ -53,7 +56,8 @@ func ensureBinDir() error {
 	return nil
 }
 
-// getAssetRegexPattern returns a regex pattern for the binary file based on the platform and architecture
+// getAssetRegexPattern returns a regex pattern for the binary file based on the platform and architecture.
+// As of rotki-core PyInstaller onedir, all platforms ship a .zip bundle.
 func getAssetRegexPattern() *regexp.Regexp {
 	var pattern string
 	switch runtime.GOOS {
@@ -64,9 +68,9 @@ func getAssetRegexPattern() *regexp.Regexp {
 			pattern = `rotki-core-(\d+\.\d+\.\d+)-macos-x64\.zip$`
 		}
 	case Linux:
-		pattern = `rotki-core-(\d+\.\d+\.\d+)-linux$`
+		pattern = `rotki-core-(\d+\.\d+\.\d+)-linux\.zip$`
 	case Windows:
-		pattern = `rotki-core-(\d+\.\d+\.\d+)-windows\.exe$`
+		pattern = `rotki-core-(\d+\.\d+\.\d+)-windows\.zip$`
 	default:
 		logger.Fatal("Unsupported platform: %s", runtime.GOOS)
 	}
@@ -75,10 +79,22 @@ func getAssetRegexPattern() *regexp.Regexp {
 
 // getChecksumRegexPattern returns a regex pattern for the checksum file based on the binary file name
 func getChecksumRegexPattern(binaryFileName string) *regexp.Regexp {
-	// Escape special regex characters in the binary file name
 	escapedBinaryFileName := regexp.QuoteMeta(binaryFileName)
 	pattern := fmt.Sprintf("^%s\\.sha512$", escapedBinaryFileName)
 	return regexp.MustCompile(pattern)
+}
+
+// executableName returns the stable name of the rotki-core executable inside the install folder.
+func executableName() string {
+	if runtime.GOOS == Windows {
+		return "rotki-core.exe"
+	}
+	return "rotki-core"
+}
+
+// InstalledBinaryPath returns the path to the installed rotki-core executable.
+func InstalledBinaryPath() string {
+	return filepath.Join(BinDir, InstallDirName, executableName())
 }
 
 // downloadFile downloads a file from a URL to a destination path
@@ -109,12 +125,10 @@ func downloadFile(downloadUrl, dest string) error {
 	}
 	defer resp.Body.Close()
 
-	// Check server response
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bad status: %s", resp.Status)
 	}
 
-	// Write the body to file
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to write file %s: %w", dest, err)
@@ -179,8 +193,6 @@ func extractVersion(fileName string, pattern *regexp.Regexp) (string, error) {
 
 // parseChecksumFile parses a checksum file and returns the checksum
 func parseChecksumFile(content string) string {
-	// The checksum file typically contains: "HASH *filename"
-	// We need to extract just the hash part
 	content = strings.TrimSpace(content)
 	parts := strings.Fields(content)
 	if len(parts) > 0 {
@@ -200,7 +212,6 @@ func verifyBinaryVersion(binaryPath, expectedVersion string) (bool, error) {
 	versionOutput := strings.TrimSpace(string(output))
 	logger.Info("Binary version output: %s", versionOutput)
 
-	// Extract the version using a regex
 	re := regexp.MustCompile(`(\d+\.\d+\.\d+)`)
 	match := re.FindStringSubmatch(versionOutput)
 	if len(match) < 2 {
@@ -215,12 +226,10 @@ func verifyBinaryVersion(binaryPath, expectedVersion string) (bool, error) {
 
 // prepareForDownload ensures the bin directory exists and gets the latest release info
 func prepareForDownload() (*GithubRelease, error) {
-	// Ensure bin directory exists
 	if err := ensureBinDir(); err != nil {
 		return nil, err
 	}
 
-	// Get latest release info
 	release, err := getLatestRelease()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get latest release: %w", err)
@@ -231,7 +240,6 @@ func prepareForDownload() (*GithubRelease, error) {
 
 // findReleaseAssets finds the appropriate asset and checksum file for the platform
 func findReleaseAssets(release *GithubRelease) (*GithubAsset, *GithubAsset, string, error) {
-	// Find the right asset for our platform
 	assetPattern := getAssetRegexPattern()
 	var asset *GithubAsset
 	for _, a := range release.Assets {
@@ -249,7 +257,6 @@ func findReleaseAssets(release *GithubRelease) (*GithubAsset, *GithubAsset, stri
 		return nil, nil, "", fmt.Errorf("could not find appropriate release asset for your platform")
 	}
 
-	// Find matching checksum file
 	checksumPattern := getChecksumRegexPattern(asset.Name)
 	var checksumAsset *GithubAsset
 	for _, a := range release.Assets {
@@ -263,7 +270,6 @@ func findReleaseAssets(release *GithubRelease) (*GithubAsset, *GithubAsset, stri
 		return nil, nil, "", fmt.Errorf("could not find checksum file for %s", asset.Name)
 	}
 
-	// Extract version from asset name
 	version, err := extractVersion(asset.Name, assetPattern)
 	if err != nil {
 		return nil, nil, "", err
@@ -276,17 +282,17 @@ func findReleaseAssets(release *GithubRelease) (*GithubAsset, *GithubAsset, stri
 	return asset, checksumAsset, version, nil
 }
 
-// downloadAssets downloads the binary and checksum files
+// downloadAssets downloads the zip and checksum files
 func downloadAssets(asset, checksumAsset *GithubAsset) (string, string, error) {
 	tmpDir := os.TempDir()
-	binaryPath := filepath.Join(tmpDir, asset.Name)
+	zipPath := filepath.Join(tmpDir, asset.Name)
 	checksumPath := filepath.Join(tmpDir, checksumAsset.Name)
 
-	logger.Info("Downloading binary from %s...", asset.BrowserDownloadURL)
-	if err := downloadFile(asset.BrowserDownloadURL, binaryPath); err != nil {
+	logger.Info("Downloading archive from %s...", asset.BrowserDownloadURL)
+	if err := downloadFile(asset.BrowserDownloadURL, zipPath); err != nil {
 		return "", "", err
 	}
-	logger.Info("Binary download complete")
+	logger.Info("Archive download complete")
 
 	logger.Info("Downloading checksum file from %s...", checksumAsset.BrowserDownloadURL)
 	if err := downloadFile(checksumAsset.BrowserDownloadURL, checksumPath); err != nil {
@@ -294,11 +300,11 @@ func downloadAssets(asset, checksumAsset *GithubAsset) (string, string, error) {
 	}
 	logger.Info("Checksum file download complete")
 
-	return binaryPath, checksumPath, nil
+	return zipPath, checksumPath, nil
 }
 
-// verifyChecksum verifies the checksum of the downloaded binary
-func verifyChecksum(binaryPath, checksumPath string) error {
+// verifyChecksum verifies the checksum of the downloaded archive
+func verifyChecksum(zipPath, checksumPath string) error {
 	logger.Info("Verifying checksum...")
 	checksumContent, err := os.ReadFile(checksumPath)
 	if err != nil {
@@ -307,119 +313,219 @@ func verifyChecksum(binaryPath, checksumPath string) error {
 	expectedChecksum := parseChecksumFile(string(checksumContent))
 	logger.Debug("Expected checksum: %s", expectedChecksum)
 
-	// Calculate actual checksum
-	actualChecksum, err := calculateChecksum(binaryPath)
+	actualChecksum, err := calculateChecksum(zipPath)
 	if err != nil {
 		return err
 	}
 	logger.Debug("Actual checksum: %s", actualChecksum)
 
-	// Verify checksum
 	if !strings.EqualFold(actualChecksum, expectedChecksum) {
-		os.Remove(binaryPath)
+		os.Remove(zipPath)
 		os.Remove(checksumPath)
-		return fmt.Errorf("checksum verification failed! The downloaded binary may be corrupted")
+		return fmt.Errorf("checksum verification failed! The downloaded archive may be corrupted")
 	}
 
 	logger.Info("Checksum verification passed!")
 	return nil
 }
 
-// extractBinary extracts the zip file for macOS
-func extractBinary(binaryPath, version string) (string, error) {
-	finalBinaryPath := binaryPath
-	if runtime.GOOS == Darwin {
-		logger.Info("Extracting zip file...")
-		tmpDir := os.TempDir()
-		extractDir := filepath.Join(tmpDir, fmt.Sprintf("rotki-core-%s", version))
+// extractZip extracts a zip archive to destDir, preserving file modes.
+// Protects against path traversal (zip-slip).
+func extractZip(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("failed to open zip file: %w", err)
+	}
+	defer r.Close()
 
-		if _, err := os.Stat(extractDir); err == nil {
-			if err := os.RemoveAll(extractDir); err != nil {
-				return "", fmt.Errorf("failed to remove existing extract directory: %w", err)
-			}
-		}
-
-		if err := os.MkdirAll(extractDir, 0755); err != nil {
-			return "", fmt.Errorf("failed to create extract directory: %w", err)
-		}
-
-		// Use unzip command line utility (available on macOS)
-		cmd := exec.Command("unzip", "-o", binaryPath, "-d", extractDir)
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("failed to extract zip file: %w", err)
-		}
-
-		// The binary should be inside the extracted directory
-		finalBinaryPath = filepath.Join(extractDir, "rotki-core")
-		if _, err := os.Stat(finalBinaryPath); os.IsNotExist(err) {
-			// Try to find the binary in the extracted directory
-			files, err := os.ReadDir(extractDir)
-			if err != nil {
-				return "", fmt.Errorf("failed to read extract directory: %w", err)
-			}
-			fileNames := make([]string, 0, len(files))
-			for _, file := range files {
-				fileNames = append(fileNames, file.Name())
-			}
-			return "", fmt.Errorf("could not find rotki-core binary in extracted files: %v", fileNames)
-		}
-
-		logger.Info("Extraction complete")
+	absDest, err := filepath.Abs(destDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve destination: %w", err)
 	}
 
-	return finalBinaryPath, nil
+	for _, f := range r.File {
+		target := filepath.Join(destDir, f.Name)
+		absTarget, err := filepath.Abs(target)
+		if err != nil {
+			return fmt.Errorf("failed to resolve target: %w", err)
+		}
+		if !strings.HasPrefix(absTarget, absDest+string(os.PathSeparator)) && absTarget != absDest {
+			return fmt.Errorf("illegal file path in zip: %s", f.Name)
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, f.Mode()); err != nil {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return fmt.Errorf("failed to create parent directory: %w", err)
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("failed to open zip entry: %w", err)
+		}
+
+		mode := f.Mode()
+		if mode == 0 {
+			mode = 0644
+		}
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		if err != nil {
+			rc.Close()
+			return fmt.Errorf("failed to create file %s: %w", target, err)
+		}
+
+		// #nosec G110 - archive is checksum-verified before extraction
+		if _, err := io.Copy(out, rc); err != nil {
+			rc.Close()
+			out.Close()
+			return fmt.Errorf("failed to write %s: %w", target, err)
+		}
+		rc.Close()
+		out.Close()
+	}
+
+	return nil
 }
 
-// installBinary moves the binary to the final location and makes it executable
-func installBinary(finalBinaryPath string) (string, error) {
-	finalPath := filepath.Join(BinDir, "rotki-core")
-	if runtime.GOOS == "windows" {
-		finalPath += ".exe"
+// extractBundle extracts the downloaded zip into a temp folder and returns:
+// - the extracted bundle root (the folder containing the executable and _internal/)
+// - the path to the versioned executable inside that bundle
+func extractBundle(zipPath, version string) (string, string, error) {
+	logger.Info("Extracting archive...")
+	tmpDir := os.TempDir()
+	extractDir := filepath.Join(tmpDir, fmt.Sprintf("rotki-core-%s-extract", version))
+
+	if err := os.RemoveAll(extractDir); err != nil {
+		return "", "", fmt.Errorf("failed to clear extract directory: %w", err)
 	}
-	logger.Info("Installing to %s...", finalPath)
-
-	if err := os.RemoveAll(finalPath); err != nil {
-		return "", fmt.Errorf("failed to remove existing binary: %w", err)
-	}
-
-	if err := os.Rename(finalBinaryPath, finalPath); err != nil {
-		// Try to copy the file instead
-		src, err := os.Open(finalBinaryPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to open source file: %w", err)
-		}
-		defer src.Close()
-
-		dst, err := os.Create(finalPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to create destination file: %w", err)
-		}
-		defer dst.Close()
-
-		if _, err := io.Copy(dst, src); err != nil {
-			return "", fmt.Errorf("failed to copy file: %w", err)
-		}
+	if err := os.MkdirAll(extractDir, 0755); err != nil {
+		return "", "", fmt.Errorf("failed to create extract directory: %w", err)
 	}
 
-	// Make executable
-	if err := os.Chmod(finalPath, 0755); err != nil {
+	if err := extractZip(zipPath, extractDir); err != nil {
+		return "", "", err
+	}
+
+	// The archive contains a single top-level "rotki-core/" folder.
+	bundleRoot := filepath.Join(extractDir, "rotki-core")
+	if _, err := os.Stat(bundleRoot); os.IsNotExist(err) {
+		entries, _ := os.ReadDir(extractDir)
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		return "", "", fmt.Errorf("could not find rotki-core folder in archive (got: %v)", names)
+	}
+
+	// The executable inside the bundle is named with version+platform suffix.
+	exeName, err := findBundleExecutable(bundleRoot)
+	if err != nil {
+		return "", "", err
+	}
+
+	logger.Info("Extraction complete")
+	return bundleRoot, filepath.Join(bundleRoot, exeName), nil
+}
+
+// findBundleExecutable returns the name of the rotki-core executable inside the extracted bundle.
+func findBundleExecutable(bundleRoot string) (string, error) {
+	entries, err := os.ReadDir(bundleRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to read bundle directory: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, "rotki-core") {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("could not find rotki-core executable in extracted bundle %s", bundleRoot)
+}
+
+// installBundle moves the extracted bundle into BinDir/rotki-core, renames the inner
+// executable to a stable name, and ensures it is executable. Returns the final exe path.
+func installBundle(bundleRoot, versionedExePath string) (string, error) {
+	installDir := filepath.Join(BinDir, InstallDirName)
+	logger.Info("Installing to %s...", installDir)
+
+	// Remove any previous install (old onefile binary path OR existing onedir folder).
+	if err := os.RemoveAll(installDir); err != nil {
+		return "", fmt.Errorf("failed to remove existing install: %w", err)
+	}
+
+	if err := os.MkdirAll(BinDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to ensure bin directory: %w", err)
+	}
+
+	if err := os.Rename(bundleRoot, installDir); err != nil {
+		// Rename across filesystems can fail; fall back to a recursive copy.
+		if copyErr := copyDir(bundleRoot, installDir); copyErr != nil {
+			return "", fmt.Errorf("failed to install bundle (rename: %v, copy: %w)", err, copyErr)
+		}
+		_ = os.RemoveAll(bundleRoot)
+	}
+
+	finalExePath := filepath.Join(installDir, executableName())
+	versionedExeInInstall := filepath.Join(installDir, filepath.Base(versionedExePath))
+	if versionedExeInInstall != finalExePath {
+		if err := os.Rename(versionedExeInInstall, finalExePath); err != nil {
+			return "", fmt.Errorf("failed to rename executable to stable name: %w", err)
+		}
+	}
+
+	if err := os.Chmod(finalExePath, 0755); err != nil {
 		return "", fmt.Errorf("failed to make binary executable: %w", err)
 	}
 
-	return finalPath, nil
+	return finalExePath, nil
+}
+
+// copyDir recursively copies src into dst.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		_, err = io.Copy(out, in)
+		return err
+	})
 }
 
 // cleanupTempFiles cleans up temporary files
-func cleanupTempFiles(binaryPath, checksumPath, version string) {
-	if runtime.GOOS == Darwin {
-		extractDir := filepath.Join(os.TempDir(), fmt.Sprintf("rotki-core-%s", version))
-		if err := os.RemoveAll(extractDir); err != nil {
-			logger.Warn("Failed to remove extract directory: %v", err)
-		}
+func cleanupTempFiles(zipPath, checksumPath, version string) {
+	extractDir := filepath.Join(os.TempDir(), fmt.Sprintf("rotki-core-%s-extract", version))
+	if err := os.RemoveAll(extractDir); err != nil {
+		logger.Warn("Failed to remove extract directory: %v", err)
 	}
 
-	if err := os.Remove(binaryPath); err != nil {
-		logger.Warn("Failed to remove temporary binary file: %v", err)
+	if err := os.Remove(zipPath); err != nil {
+		logger.Warn("Failed to remove temporary archive: %v", err)
 	}
 
 	if err := os.Remove(checksumPath); err != nil {
@@ -427,46 +533,39 @@ func cleanupTempFiles(binaryPath, checksumPath, version string) {
 	}
 }
 
-// DownloadRotkiCore downloads and installs the latest rotki-core binary
+// DownloadRotkiCore downloads and installs the latest rotki-core onedir bundle.
 func DownloadRotkiCore() error {
 	logger.Info("Starting download of rotki-core")
 
-	// Step 1: Prepare for download
 	release, err := prepareForDownload()
 	if err != nil {
 		return err
 	}
 
-	// Step 2: Find release assets
 	asset, checksumAsset, version, err := findReleaseAssets(release)
 	if err != nil {
 		return err
 	}
 
-	// Step 3: Download assets
-	binaryPath, checksumPath, err := downloadAssets(asset, checksumAsset)
+	zipPath, checksumPath, err := downloadAssets(asset, checksumAsset)
 	if err != nil {
 		return err
 	}
 
-	// Step 4: Verify checksum
-	if err := verifyChecksum(binaryPath, checksumPath); err != nil {
+	if err := verifyChecksum(zipPath, checksumPath); err != nil {
 		return err
 	}
 
-	// Step 5: Extract binary (for macOS)
-	finalBinaryPath, err := extractBinary(binaryPath, version)
+	bundleRoot, versionedExePath, err := extractBundle(zipPath, version)
 	if err != nil {
 		return err
 	}
 
-	// Step 6: Install binary
-	finalPath, err := installBinary(finalBinaryPath)
+	finalPath, err := installBundle(bundleRoot, versionedExePath)
 	if err != nil {
 		return err
 	}
 
-	// Step 7: Verify binary version
 	logger.Info("Verifying binary version...")
 	if ok, err := verifyBinaryVersion(finalPath, version); err != nil {
 		return fmt.Errorf("failed to verify binary version: %w", err)
@@ -475,8 +574,7 @@ func DownloadRotkiCore() error {
 	}
 	logger.Info("Binary version verification passed!")
 
-	// Step 8: Clean up
-	cleanupTempFiles(binaryPath, checksumPath, version)
+	cleanupTempFiles(zipPath, checksumPath, version)
 
 	logger.Info("rotki-core %s has been successfully installed to %s!", version, finalPath)
 	return nil

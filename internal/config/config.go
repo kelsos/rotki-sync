@@ -3,9 +3,21 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 )
+
+// defaultBinPath returns the default path to the rotki-core executable inside
+// the extracted onedir bundle.
+func defaultBinPath() string {
+	exe := "rotki-core"
+	if runtime.GOOS == "windows" {
+		exe = "rotki-core.exe"
+	}
+	return filepath.Join("bin", "rotki-core", exe)
+}
 
 // Config holds all application configuration
 type Config struct {
@@ -30,7 +42,7 @@ type Config struct {
 func NewConfig() *Config {
 	return &Config{
 		Port:            59001,
-		BinPath:         "bin/rotki-core",
+		BinPath:         defaultBinPath(),
 		APIReadyTimeout: 30,
 		MaxRetries:      10,
 		RetryDelay:      2 * time.Second,
