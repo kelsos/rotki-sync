@@ -44,7 +44,7 @@ mod-tidy:
 	$(GOMOD) tidy
 
 download-golangci-lint:
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin v2.1.6
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin v2.11.3
 
 # cross-compilation for different platforms
 build-linux:

@@ -344,7 +344,7 @@ func extractZip(zipPath, destDir string) error {
 	}
 
 	for _, f := range r.File {
-		target := filepath.Join(destDir, f.Name)
+		target := filepath.Join(destDir, f.Name) // #nosec G305 -- traversal guarded by absTarget prefix check below
 		absTarget, err := filepath.Abs(target)
 		if err != nil {
 			return fmt.Errorf("failed to resolve target: %w", err)
@@ -502,7 +502,7 @@ func copyDir(src, dst string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode())
 		}
-		in, err := os.Open(path)
+		in, err := os.Open(path) // #nosec G304 G122 -- path comes from filepath.Walk of our freshly extracted dir
 		if err != nil {
 			return err
 		}
