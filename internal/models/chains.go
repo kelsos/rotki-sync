@@ -22,38 +22,15 @@ type Blockchain struct {
 // BlockchainResponse represents the API response for supported blockchains
 type BlockchainResponse = APIResponse[[]Blockchain]
 
-// EvmTransactionAccount represents an account on an EVM chain
-type EvmTransactionAccount struct {
-	Address  string `json:"address" validate:"required"`
-	EvmChain string `json:"evm_chain" validate:"required"`
-}
-
-// EvmTransactionsRequest represents a request to fetch EVM transactions
-type EvmTransactionsRequest struct {
-	Accounts []EvmTransactionAccount `json:"accounts" validate:"required"`
-}
-
-// EvmTransactionsResponse represents the API response for EVM transactions
-type EvmTransactionsResponse struct {
-	Result  bool   `json:"result" validate:"required"`
-	Message string `json:"message,omitempty"`
-}
-
-// EvmTransactionDecodeRequest represents a request to decode EVM transactions
-type EvmTransactionDecodeRequest struct {
-	Chains []string `json:"chains" validate:"required"`
-}
-
 // DecodedTxNumber represents the number of decoded transactions per chain
 type DecodedTxNumber map[string]int
 
-// EvmTransactionDecodeResult represents the result of decoding EVM transactions
-type EvmTransactionDecodeResult struct {
+// TransactionDecodeResult represents the result of decoding transactions via
+// the unified /blockchains/transactions/decode endpoint. The decoded_tx_number
+// map is keyed by chain and holds the per-chain decoded count.
+type TransactionDecodeResult struct {
 	DecodedTxNumber DecodedTxNumber `json:"decoded_tx_number" validate:"required"`
 }
-
-// EvmTransactionDecodeResponse represents the API response for decoding EVM transactions
-type EvmTransactionDecodeResponse = APIResponse[EvmTransactionDecodeResult]
 
 type QueryType string
 

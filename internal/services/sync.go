@@ -1,7 +1,9 @@
 package services
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kelsos/rotki-sync/internal/async"
@@ -39,57 +41,115 @@ func NewSyncService(cfg *config.Config) *SyncService {
 	}
 }
 
-// ProcessUserData performs all data processing for a single user
-func (s *SyncService) ProcessUserData(username string) error {
+// processUserData performs all data processing for a single user and records
+// the outcome of each step into a UserReport. A non-nil second return is a
+// fatal contract break (e.g. a removed endpoint) that aborts the remaining
+// steps for this user and the whole run.
+func (s *SyncService) processUserData(username string) (UserReport, error) {
 	logger.Info("Starting data processing for user: %s", username)
 
-	// Perform snapshot if needed
-	if err := s.blockchain.PerformSnapshotIfNeeded(); err != nil {
-		logger.Error("Failed to perform snapshot: %v", err)
+	report := UserReport{Username: username}
+
+	// Snapshot and exchange trades are single operations with no per-item count.
+	report.add(StepReport{Step: "balance snapshot", Err: s.blockchain.PerformSnapshotIfNeeded()})
+
+	detectStats, detectErr := s.blockchain.DetectTokens()
+	report.add(StepReport{Step: "token detection", Stats: detectStats, Err: detectErr})
+
+	report.add(StepReport{Step: "exchange trades", Err: s.exchange.GetExchangeTrades()})
+
+	// The remaining steps loop over accounts/chains and can hit a removed
+	// endpoint; a ContractBreakError from any of them aborts the run.
+	steps := []struct {
+		name string
+		core bool
+		run  func() (OpStats, error)
+	}{
+		{"online events fetch", false, s.blockchain.FetchOnlineEvents},
+		{"EVM transaction fetch", true, s.blockchain.FetchEvmTransactions},
+		{"non-EVM transaction fetch", true, s.blockchain.FetchNonEvmTransactions},
+		{"EVM transaction decode", true, s.blockchain.DecodeEvmTransactions},
+		{"non-EVM transaction decode", true, s.blockchain.DecodeNonEvmTransactions},
 	}
 
-	// Detect tokens on EVM chains
-	if err := s.blockchain.DetectTokens(); err != nil {
-		logger.Error("Failed to detect tokens: %v", err)
-	}
+	for _, step := range steps {
+		stats, err := step.run()
+		report.add(StepReport{Step: step.name, Core: step.core, Stats: stats, Err: err})
 
-	// Fetch exchange trades
-	if err := s.exchange.GetExchangeTrades(); err != nil {
-		logger.Error("Failed fetch exchange trades: %v", err)
-	}
-
-	// Fetch online events
-	if err := s.blockchain.FetchOnlineEvents(); err != nil {
-		logger.Error("Failed to fetch online events: %v", err)
-	}
-
-	// Fetch EVM transactions
-	if err := s.blockchain.FetchEvmTransactions(); err != nil {
-		logger.Error("Failed to fetch EVM transactions: %v", err)
-	}
-
-	// Fetch non-EVM transactions
-	if err := s.blockchain.FetchNonEvmTransactions(); err != nil {
-		logger.Error("Failed to fetch non-EVM transactions: %v", err)
-	}
-
-	// Decode EVM transactions
-	if err := s.blockchain.DecodeEvmTransactions(); err != nil {
-		logger.Error("Failed to decode EVM transactions: %v", err)
-	}
-
-	// Decode non-EVM transactions
-	if err := s.blockchain.DecodeNonEvmTransactions(); err != nil {
-		logger.Error("Failed to decode non-EVM transactions: %v", err)
+		var contractBreak *ContractBreakError
+		if errors.As(err, &contractBreak) {
+			logger.Error("Aborting run for user %s: %v", username, err)
+			return report, contractBreak
+		}
+		if err != nil {
+			logger.Error("Failed %s: %v", step.name, err)
+		}
 	}
 
 	logger.Info("Completed data processing for user: %s", username)
-	return nil
+	return report, nil
 }
 
-// ProcessAllUsers processes all users in the system
-func (s *SyncService) ProcessAllUsers() error {
-	return s.user.ProcessUsers(s.ProcessUserData)
+// ProcessAllUsers processes all users in the system and returns an aggregated
+// run report. The returned error is a transport/setup failure that prevented
+// processing; per-step and contract-break outcomes are carried in the report.
+func (s *SyncService) ProcessAllUsers() (*RunReport, error) {
+	report := &RunReport{}
+
+	err := s.user.ProcessUsers(func(username string) error {
+		// Once a contract break has aborted the run, skip the remaining users:
+		// the same broken endpoint would fail for every one of them.
+		if report.FatalErr != nil {
+			logger.Warn("Skipping user %s after contract break", username)
+			return nil
+		}
+
+		userReport, fatal := s.processUserData(username)
+		report.add(userReport)
+		if fatal != nil {
+			report.FatalErr = fatal
+		}
+		return nil
+	})
+
+	return report, err
+}
+
+// requiredEndpoints lists the routes a sync run depends on. The preflight
+// probes each so a removed or renamed route is caught at startup rather than
+// surfacing as a 404 mid-run (the failure mode that silently dropped a month of
+// EVM transactions after a unified-API migration).
+var requiredEndpoints = []string{
+	evmTransactionsEndpoint,    // /blockchains/transactions
+	transactionsDecodeEndpoint, // /blockchains/transactions/decode
+	"/blockchains/supported",
+	"/history/events/query",
+	"/balances",
+	"/tasks",
+}
+
+// PreflightEndpoints verifies that every endpoint the CLI depends on is still
+// registered on the backend. It returns an error naming the missing routes so a
+// contract break (e.g. after a rotki-core upgrade) is caught before any work is
+// done. The probe is side-effect free: it issues OPTIONS and only flags a 404.
+func (s *SyncService) PreflightEndpoints() error {
+	var missing []string
+	for _, endpoint := range requiredEndpoints {
+		exists, err := s.client.EndpointExists(endpoint)
+		if err != nil {
+			return fmt.Errorf("preflight probe for %s failed: %w", endpoint, err)
+		}
+		if !exists {
+			logger.Error("Preflight: required endpoint %s is missing (404)", endpoint)
+			missing = append(missing, endpoint)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("required endpoints missing from backend (contract break): %s",
+			strings.Join(missing, ", "))
+	}
+	logger.Info("Endpoint preflight passed (%d endpoints)", len(requiredEndpoints))
+	return nil
 }
 
 // WaitForAPIReady waits for the API to become ready
@@ -145,17 +205,20 @@ func (s *SyncService) GetExchangeTrades() error {
 
 // FetchOnlineEvents fetches online blockchain events
 func (s *SyncService) FetchOnlineEvents() error {
-	return s.blockchain.FetchOnlineEvents()
+	_, err := s.blockchain.FetchOnlineEvents()
+	return err
 }
 
 // FetchEvmTransactions fetches EVM transactions
 func (s *SyncService) FetchEvmTransactions() error {
-	return s.blockchain.FetchEvmTransactions()
+	_, err := s.blockchain.FetchEvmTransactions()
+	return err
 }
 
 // DecodeEvmTransactions decodes EVM transactions
 func (s *SyncService) DecodeEvmTransactions() error {
-	return s.blockchain.DecodeEvmTransactions()
+	_, err := s.blockchain.DecodeEvmTransactions()
+	return err
 }
 
 // FetchAccounts retrieves all accounts for all chains
@@ -175,7 +238,8 @@ func (s *SyncService) FetchAccounts() ([]interface{}, error) {
 
 // DetectTokens runs token detection on EVM chains
 func (s *SyncService) DetectTokens() error {
-	return s.blockchain.DetectTokens()
+	_, err := s.blockchain.DetectTokens()
+	return err
 }
 
 // GetTokenDetectionChains returns EVM chains with addresses for token detection
@@ -202,12 +266,14 @@ func (s *SyncService) ShouldSkipTokenDetection(info models.TokenDetectAddressInf
 
 // FetchNonEvmTransactions fetches transactions for non-EVM chains
 func (s *SyncService) FetchNonEvmTransactions() error {
-	return s.blockchain.FetchNonEvmTransactions()
+	_, err := s.blockchain.FetchNonEvmTransactions()
+	return err
 }
 
 // DecodeNonEvmTransactions decodes transactions for non-EVM chains
 func (s *SyncService) DecodeNonEvmTransactions() error {
-	return s.blockchain.DecodeNonEvmTransactions()
+	_, err := s.blockchain.DecodeNonEvmTransactions()
+	return err
 }
 
 // GetSupportedEvmChains retrieves supported EVM chains

@@ -187,10 +187,29 @@ func executeHTTPRequest(tm *TaskManager, method, endpoint string, requestBody ma
 	return &asyncResponse, err
 }
 
-// waitForTaskResult waits for async task completion and unmarshals result
+// waitForTaskResult waits for async task completion and unmarshals result.
+// A completed task can still describe a failed operation, so the outcome's
+// status_code/message is inspected before the result is treated as success.
 func waitForTaskResult[T any](tm *TaskManager, taskID models.TaskID) (*models.APIResponse[T], error) {
 	resultChan := tm.RegisterTask(taskID)
 	rawResult := <-resultChan
+
+	// rawResult.Result is the task outcome JSON; rawResult.Message carries
+	// fetch-level errors set by fetchTaskResult (task not found / fetch failed).
+	if len(rawResult.Result) == 0 {
+		if rawResult.Message != "" {
+			return nil, fmt.Errorf("async task %d failed: %s", taskID, rawResult.Message)
+		}
+		return nil, fmt.Errorf("async task %d returned an empty outcome", taskID)
+	}
+
+	var outcome models.TaskOutcome
+	if err := json.Unmarshal(rawResult.Result, &outcome); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal task outcome: %w", err)
+	}
+	if err := outcome.Err(); err != nil {
+		return nil, fmt.Errorf("async task %d: %w", taskID, err)
+	}
 
 	var finalResponse models.APIResponse[T]
 	if err := json.Unmarshal(rawResult.Result, &finalResponse); err != nil {

@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,36 @@ import (
 	"github.com/kelsos/rotki-sync/internal/config"
 	"github.com/kelsos/rotki-sync/internal/logger"
 )
+
+// HTTPError represents a non-2xx HTTP response from the rotki API. It is a
+// typed error so callers can distinguish a contract break (e.g. a removed
+// endpoint returning 404) from a transient failure.
+type HTTPError struct {
+	StatusCode int
+	URL        string
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("HTTP error %d: %s", e.StatusCode, e.Body)
+}
+
+// IsEndpointMissing reports whether err indicates the endpoint no longer exists
+// on the backend — a 404, or rotki's "requested URL was not found" body. This
+// is a contract break (the route was removed or renamed), not a transient
+// per-request failure, and should abort the run rather than be retried.
+func IsEndpointMissing(err error) bool {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		if httpErr.StatusCode == http.StatusNotFound {
+			return true
+		}
+		if strings.Contains(strings.ToLower(httpErr.Body), "requested url was not found") {
+			return true
+		}
+	}
+	return false
+}
 
 // APIClient handles all HTTP communication with the Rotki API
 type APIClient struct {
@@ -98,7 +129,7 @@ func (c *APIClient) request(method, endpoint string, body interface{}, result in
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		logger.Error("%s: HTTP error %d: %s", url, resp.StatusCode, string(bodyBytes))
-		return fmt.Errorf("HTTP error %d: %s", resp.StatusCode, string(bodyBytes))
+		return &HTTPError{StatusCode: resp.StatusCode, URL: url, Body: string(bodyBytes)}
 	}
 
 	if result != nil {
@@ -125,6 +156,28 @@ func (c *APIClient) Ping() error {
 	}
 
 	return nil
+}
+
+// EndpointExists probes whether a route is registered on the backend without
+// invoking its handler or requiring auth. It issues an OPTIONS request: a
+// registered Flask route answers OPTIONS (200 with an Allow header) while an
+// unregistered/removed route returns 404. Any non-404 status — including method
+// errors — counts as "exists". A transport error is returned so the caller can
+// distinguish "endpoint missing" from "could not reach backend".
+func (c *APIClient) EndpointExists(endpoint string) (bool, error) {
+	reqURL := c.BuildURL(endpoint)
+	req, err := http.NewRequest(http.MethodOptions, reqURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("error creating OPTIONS request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("OPTIONS request to %s failed: %w", reqURL, err)
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode != http.StatusNotFound, nil
 }
 
 // WaitForAPIReady waits for the API to become ready

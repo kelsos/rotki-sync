@@ -10,6 +10,7 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
+	"github.com/kelsos/rotki-sync/internal/alert"
 	"github.com/kelsos/rotki-sync/internal/backup"
 	"github.com/kelsos/rotki-sync/internal/config"
 	"github.com/kelsos/rotki-sync/internal/download"
@@ -18,6 +19,14 @@ import (
 	"github.com/kelsos/rotki-sync/internal/services"
 	"github.com/kelsos/rotki-sync/internal/tui"
 	"github.com/kelsos/rotki-sync/internal/utils"
+)
+
+// Exit codes communicate the run outcome to the cron wrapper so a broken sync
+// can never look green again.
+const (
+	exitOK            = 0 // all core steps did work
+	exitStepFailure   = 1 // a core step ran but had zero successes
+	exitContractBreak = 2 // a depended-on endpoint is gone (preflight or mid-run 404)
 )
 
 // backupProgressPrinter returns a ProgressFunc suitable for the backup
@@ -46,7 +55,9 @@ func backupProgressPrinter() backup.ProgressFunc {
 }
 
 // runSync wires up rotki-core and runs the sync flow with or without the TUI.
-func runSync(cfg *config.Config, disableTUI, skipConfirm bool) {
+// It returns a process exit code so a non-interactive (cron) run can signal a
+// failed or aborted sync instead of always exiting 0.
+func runSync(cfg *config.Config, disableTUI, skipConfirm bool) int {
 	if !disableTUI {
 		if err := logger.InitFileOnly(); err != nil {
 			logger.Init()
@@ -69,6 +80,7 @@ func runSync(cfg *config.Config, disableTUI, skipConfirm bool) {
 	}
 
 	syncService := services.NewSyncService(cfg)
+	defer syncService.Cleanup()
 
 	if !syncService.WaitForAPIReady() {
 		logger.Fatal("API failed to become ready")
@@ -76,11 +88,21 @@ func runSync(cfg *config.Config, disableTUI, skipConfirm bool) {
 
 	if !confirmRotkiVersion(syncService, skipConfirm) {
 		logger.Info("Sync canceled by user")
-		if err := rotki.Stop(); err != nil {
-			logger.Error("Failed to stop rotki-core: %v", err)
-		}
-		return
+		stopRotki(rotki)
+		return exitOK
 	}
+
+	// Preflight: catch a removed/renamed endpoint before doing any work, so a
+	// contract break is an immediate, loud failure rather than a silent month
+	// of missing data.
+	if err := syncService.PreflightEndpoints(); err != nil {
+		logger.Error("Endpoint preflight failed: %v", err)
+		alert.Notify("rotki-sync: endpoint preflight failed", err.Error())
+		stopRotki(rotki)
+		return exitContractBreak
+	}
+
+	exitCode := exitOK
 
 	if !disableTUI {
 		monitor := tui.NewSyncMonitor(syncService)
@@ -91,16 +113,48 @@ func runSync(cfg *config.Config, disableTUI, skipConfirm bool) {
 			logger.Error("Error running TUI monitor: %v", err)
 		}
 	} else {
-		if err := syncService.ProcessAllUsers(); err != nil {
+		report, err := syncService.ProcessAllUsers()
+		if err != nil {
 			logger.Error("Error processing users: %v", err)
 		}
-		logger.Info("All users processed successfully")
+		exitCode = reportExitCode(report)
+		logger.Info("%s", report.Summary())
+		if exitCode == exitOK {
+			logger.Info("Sync completed successfully")
+		} else {
+			logger.Error("Sync completed with failures (exit %d)", exitCode)
+			alert.Notify(
+				fmt.Sprintf("rotki-sync: run failed (exit %d)", exitCode),
+				report.Summary())
+		}
 	}
-
-	defer syncService.Cleanup()
 
 	if err := rotki.WaitForExit(); err != nil {
 		logger.Error("Error waiting for rotki-core to exit: %v", err)
+	}
+
+	return exitCode
+}
+
+// reportExitCode maps a run report to a process exit code: a contract break
+// takes priority, then any other step failure, otherwise success.
+func reportExitCode(report *services.RunReport) int {
+	if report == nil {
+		return exitStepFailure
+	}
+	if report.FatalErr != nil {
+		return exitContractBreak
+	}
+	if report.HasFailures() {
+		return exitStepFailure
+	}
+	return exitOK
+}
+
+// stopRotki stops rotki-core, logging any failure.
+func stopRotki(rotki *process.RotkiProcess) {
+	if err := rotki.Stop(); err != nil {
+		logger.Error("Failed to stop rotki-core: %v", err)
 	}
 }
 
@@ -116,6 +170,15 @@ func confirmRotkiVersion(syncService *services.SyncService, skipPrompt bool) boo
 
 	fmt.Printf("rotki-core version: %s\n", info.Version.OurVersion)
 	fmt.Printf("data directory:     %s\n", info.DataDirectory)
+
+	// Version-compatibility gate: a core upgrade is what removed the legacy EVM
+	// transaction endpoints last time, so warn loudly when the running core is
+	// outside the range the endpoint contract was tested against.
+	if status := services.CheckCoreVersion(info.Version.OurVersion); !status.Compatible {
+		logger.Warn("rotki-core version check: %s", status.Warning)
+		fmt.Printf("WARNING: %s\n", status.Warning)
+		fmt.Printf("         (last tested against rotki-core %s)\n", status.Tested)
+	}
 
 	if skipPrompt {
 		return true
@@ -150,14 +213,34 @@ func main() {
 	var disableTUI bool
 	var skipConfirm bool
 
+	// exitCode is set by commands that need to control the process exit status
+	// (e.g. a sync that failed or aborted). It is applied after Execute so
+	// deferred cleanup still runs.
+	exitCode := exitOK
+
 	rootCmd := &cobra.Command{
 		Use:   "rotki-sync",
 		Short: "A CLI tool for syncing rotki data",
 		Long:  `rotki-sync is a CLI tool for syncing rotki data from various sources.`,
 		Run: func(cmd *cobra.Command, args []string) {
-			runSync(cfg, disableTUI, skipConfirm)
+			exitCode = runSync(cfg, disableTUI, skipConfirm)
 		},
 	}
+
+	// Add a preflight command: boot rotki-core and assert every endpoint the
+	// CLI depends on is still registered, without running a sync. Intended for
+	// CI to catch endpoint removal the moment the bundled core is bumped.
+	preflightCmd := &cobra.Command{
+		Use:   "preflight",
+		Short: "Verify the backend still exposes every endpoint the sync depends on",
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = runPreflight(cfg)
+		},
+	}
+	preflightCmd.Flags().IntVarP(&cfg.Port, "port", "p", cfg.Port, "Port to run rotki-core on")
+	preflightCmd.Flags().StringVarP(&cfg.BinPath, "bin-path", "b", cfg.BinPath, "Path to rotki-core binary")
+	preflightCmd.Flags().StringVarP(&cfg.DataDir, "data-dir", "", cfg.DataDir, "Directory where rotki's data resides")
+	preflightCmd.Flags().IntVarP(&cfg.APIReadyTimeout, "api-ready-timeout", "t", cfg.APIReadyTimeout, "Maximum attempts to check API readiness")
 
 	// Add a download command
 	downloadCmd := &cobra.Command{
@@ -208,9 +291,50 @@ func main() {
 	// Add subcommands
 	rootCmd.AddCommand(downloadCmd)
 	rootCmd.AddCommand(backupCmd)
+	rootCmd.AddCommand(preflightCmd)
 
 	// Execute the root command
 	if err := rootCmd.Execute(); err != nil {
 		logger.Fatal("Failed to execute command: %v", err)
 	}
+
+	if exitCode != exitOK {
+		os.Exit(exitCode)
+	}
+}
+
+// runPreflight boots rotki-core, waits for the API, and verifies every required
+// endpoint is registered. It returns exitContractBreak when a route is missing
+// and exitOK when all are present.
+func runPreflight(cfg *config.Config) int {
+	logger.Init()
+	cfg.SetBaseURL()
+
+	if err := cfg.Validate(); err != nil {
+		logger.Fatal("Invalid configuration: %v", err)
+	}
+
+	rotki, err := process.StartRotkiCore(cfg.BinPath, cfg.Port, cfg.APIReadyTimeout, cfg.DataDir)
+	if err != nil {
+		logger.Fatal("Failed to start rotki-core: %v", err)
+	}
+
+	syncService := services.NewSyncService(cfg)
+	defer syncService.Cleanup()
+
+	if !syncService.WaitForAPIReady() {
+		logger.Fatal("API failed to become ready")
+	}
+
+	preflightErr := syncService.PreflightEndpoints()
+	stopRotki(rotki)
+
+	if preflightErr != nil {
+		logger.Error("Preflight failed: %v", preflightErr)
+		alert.Notify("rotki-sync: preflight failed", preflightErr.Error())
+		return exitContractBreak
+	}
+
+	logger.Info("Preflight succeeded: all required endpoints are present")
+	return exitOK
 }

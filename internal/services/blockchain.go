@@ -114,13 +114,23 @@ func (s *BlockchainService) FetchAccounts() ([]models.ChainAccount, error) {
 	return s.FetchAccountsForChains(evmChains)
 }
 
-// FetchEvmTransactions fetches EVM transactions for all accounts
-func (s *BlockchainService) FetchEvmTransactions() error {
+// evmTransactionsEndpoint is the unified transactions route the desktop app
+// uses for every chain type. The legacy /blockchains/evm/transactions route was
+// removed when rotki migrated to this unified API.
+const evmTransactionsEndpoint = "/blockchains/transactions"
+
+// FetchEvmTransactions fetches EVM transactions for all accounts through the
+// unified transactions endpoint. It returns per-account ok/failed counts; a
+// removed endpoint (404) aborts the run with a ContractBreakError rather than
+// being retried once per account.
+func (s *BlockchainService) FetchEvmTransactions() (OpStats, error) {
 	logger.Info("Starting EVM transaction fetch...")
+
+	var stats OpStats
 
 	chainAccounts, err := s.FetchAccounts()
 	if err != nil {
-		return fmt.Errorf("failed to fetch accounts: %w", err)
+		return stats, fmt.Errorf("failed to fetch accounts: %w", err)
 	}
 
 	logger.Info("Found %d total accounts across all chains", len(chainAccounts))
@@ -143,88 +153,122 @@ func (s *BlockchainService) FetchEvmTransactions() error {
 		})
 
 		for _, account := range accounts {
-			err := s.GetAccountTransactions(account)
-			if err != nil {
+			if err := s.GetAccountTransactions(account); err != nil {
+				if client.IsEndpointMissing(err) {
+					return stats, &ContractBreakError{
+						Step:     "EVM transaction fetch",
+						Endpoint: evmTransactionsEndpoint,
+						Err:      err,
+					}
+				}
+				stats.Failed++
 				logger.Error("Failed to get transactions for account %s on chain %s: %v",
 					account.Address, account.EvmChain, err)
 				continue
 			}
+			stats.Ok++
 		}
 	}
 
-	logger.Info("Completed EVM transaction fetch")
-	return nil
+	logger.Info("Completed EVM transaction fetch (%d ok / %d failed)", stats.Ok, stats.Failed)
+	return stats, nil
 }
 
-// GetAccountTransactions fetches transactions for a specific account
+// GetAccountTransactions fetches transactions for a specific account through the
+// unified endpoint, using the chain id (e.g. "ethereum", "optimism") as the
+// account's blockchain — the same shape the non-EVM path and the desktop app
+// send.
 func (s *BlockchainService) GetAccountTransactions(account models.ChainAccount) error {
-	logger.Debug("Fetching transactions for %s (%s)", account.EvmChain, account.Address)
+	logger.Debug("Fetching transactions for %s (%s)", account.Blockchain, account.Address)
 
-	transactionAccount := models.EvmTransactionAccount{
-		Address:  account.Address,
-		EvmChain: account.EvmChain,
+	requestData := models.TransactionsRequest{
+		Accounts: []models.TransactionAccount{
+			{
+				Address:    account.Address,
+				Blockchain: account.Blockchain,
+			},
+		},
 	}
 
-	requestData := models.EvmTransactionsRequest{
-		Accounts: []models.EvmTransactionAccount{transactionAccount},
-	}
-
-	// Use async for fetching EVM transactions
-	response, err := async.Post[bool](s.asyncClient, "/blockchains/evm/transactions", requestData)
+	// Use async for fetching transactions
+	response, err := async.Post[bool](s.asyncClient, evmTransactionsEndpoint, requestData)
 	if err != nil {
-		logger.Error("Failed to fetch transactions for %s for chain %s: %v",
-			account.Address, account.EvmChain, err)
-		return fmt.Errorf("failed to fetch transactions for %s for chain %s: %w", account.Address, account.EvmChain, err)
+		return fmt.Errorf("failed to fetch transactions for %s on chain %s: %w", account.Address, account.Blockchain, err)
 	}
 	if response == nil {
-		return fmt.Errorf("received nil response for transactions of %s on chain %s", account.Address, account.EvmChain)
+		return fmt.Errorf("received nil response for transactions of %s on chain %s", account.Address, account.Blockchain)
 	}
 
 	return nil
 }
 
+// transactionsDecodeEndpoint is the unified decode route shared by every chain
+// type. The legacy /blockchains/evm/transactions/decode route was removed in
+// the unified-API migration.
+const transactionsDecodeEndpoint = "/blockchains/transactions/decode"
+
 // DecodeEvmTransactions decodes EVM transactions for each supported chain
-func (s *BlockchainService) DecodeEvmTransactions() error {
+// through the unified decode endpoint, one chain id per request. It returns
+// per-chain ok/failed counts; a removed endpoint (404) aborts with a
+// ContractBreakError.
+func (s *BlockchainService) DecodeEvmTransactions() (OpStats, error) {
+	var stats OpStats
+
 	evmChains, err := s.GetSupportedEvmChains()
 	if err != nil {
-		return fmt.Errorf("failed to get EVM chains: %w", err)
+		return stats, fmt.Errorf("failed to get EVM chains: %w", err)
 	}
 
-	// Filter out chains without an EVM chain name and excluded chains
-	chainNames := make([]string, 0)
+	// Decode by chain id, skipping chains without an EVM chain name and
+	// excluded chains.
+	chainIDs := make([]string, 0)
 	for _, chain := range evmChains {
 		if chain.EvmChainName != "" && !isChainExcluded(chain.EvmChainName) {
-			chainNames = append(chainNames, chain.EvmChainName)
+			chainIDs = append(chainIDs, chain.ID)
 		}
 	}
 
-	logger.Info("Found %d EVM chains for transaction decoding", len(chainNames))
+	logger.Info("Found %d EVM chains for transaction decoding", len(chainIDs))
 
-	for _, chainName := range chainNames {
-		logger.Debug("Decoding transactions for chain %s", chainName)
+	for _, chainID := range chainIDs {
+		logger.Debug("Decoding transactions for chain %s", chainID)
 
-		requestData := models.EvmTransactionDecodeRequest{
-			Chains: []string{chainName},
+		requestData := models.TransactionDecodeRequest{
+			Chain: chainID,
 		}
 
-		// Use async for decoding EVM transactions
-		response, err := async.Post[models.EvmTransactionDecodeResult](s.asyncClient, "/blockchains/evm/transactions/decode", requestData)
+		response, err := async.Post[models.TransactionDecodeResult](s.asyncClient, transactionsDecodeEndpoint, requestData)
 		if err != nil {
-			logger.Error("Failed to decode transactions for chain %s: %v", chainName, err)
+			if client.IsEndpointMissing(err) {
+				return stats, &ContractBreakError{
+					Step:     "EVM transaction decode",
+					Endpoint: transactionsDecodeEndpoint,
+					Err:      err,
+				}
+			}
+			stats.Failed++
+			logger.Error("Failed to decode transactions for chain %s: %v", chainID, err)
 			continue
 		}
 		if response == nil {
-			logger.Error("Received nil response for decoding transactions on chain %s", chainName)
+			stats.Failed++
+			logger.Error("Received nil response for decoding transactions on chain %s", chainID)
 			continue
 		}
 
-		decodedTransactions := response.Result.DecodedTxNumber[chainName]
-		if decodedTransactions > 0 {
-			logger.Info("Decoded %d transactions for chain %s", decodedTransactions, chainName)
+		stats.Ok++
+		// The decoded_tx_number map is keyed by chain; sum it so the count is
+		// reported regardless of whether the key is the chain id or evm name.
+		decoded := 0
+		for _, n := range response.Result.DecodedTxNumber {
+			decoded += n
+		}
+		if decoded > 0 {
+			logger.Info("Decoded %d transactions for chain %s", decoded, chainID)
 		}
 	}
 
-	return nil
+	return stats, nil
 }
 
 // TokenDetectionChain holds a chain's ID, name, and the addresses to detect tokens for
@@ -336,10 +380,12 @@ func (s *BlockchainService) GetCachedTokenDetection(chainID string, addresses []
 // DetectTokens runs token detection on EVM chains (excluding avalanche).
 // Per-address detection is skipped when a cached detection younger than
 // tokenDetectionMaxAge exists.
-func (s *BlockchainService) DetectTokens() error {
+func (s *BlockchainService) DetectTokens() (OpStats, error) {
+	var stats OpStats
+
 	chains, err := s.GetTokenDetectionChains()
 	if err != nil {
-		return err
+		return stats, err
 	}
 
 	for _, chain := range chains {
@@ -359,19 +405,25 @@ func (s *BlockchainService) DetectTokens() error {
 			logger.Info("Detecting tokens for %s on %s", address, chain.ChainName)
 
 			if err := s.DetectTokensForAddress(chain.ChainID, address); err != nil {
+				stats.Failed++
 				logger.Error("Failed to detect tokens for %s on %s: %v", address, chain.ChainName, err)
 				continue
 			}
 
+			stats.Ok++
 			logger.Info("Token detection completed for %s on %s", address, chain.ChainName)
 		}
 	}
 
-	return nil
+	return stats, nil
 }
 
-// FetchNonEvmTransactions fetches transactions for non-EVM chain types
-func (s *BlockchainService) FetchNonEvmTransactions() error {
+// FetchNonEvmTransactions fetches transactions for non-EVM chain types. It
+// returns per-account ok/failed counts; a removed endpoint (404) aborts with a
+// ContractBreakError.
+func (s *BlockchainService) FetchNonEvmTransactions() (OpStats, error) {
+	var stats OpStats
+
 	for _, chainType := range nonEvmChainTypes {
 		chains, err := s.GetSupportedChainsByType(chainType)
 		if err != nil {
@@ -401,22 +453,35 @@ func (s *BlockchainService) FetchNonEvmTransactions() error {
 				},
 			}
 
-			_, err := async.Post[bool](s.asyncClient, "/blockchains/transactions", requestData)
+			_, err := async.Post[bool](s.asyncClient, evmTransactionsEndpoint, requestData)
 			if err != nil {
+				if client.IsEndpointMissing(err) {
+					return stats, &ContractBreakError{
+						Step:     "non-EVM transaction fetch",
+						Endpoint: evmTransactionsEndpoint,
+						Err:      err,
+					}
+				}
+				stats.Failed++
 				logger.Error("Failed to fetch transactions for %s on %s: %v",
 					account.Address, account.Blockchain, err)
 				continue
 			}
+			stats.Ok++
 		}
 
 		logger.Info("Completed %s transaction fetch", chainType)
 	}
 
-	return nil
+	return stats, nil
 }
 
-// DecodeNonEvmTransactions decodes transactions for non-EVM chain types that support decoding
-func (s *BlockchainService) DecodeNonEvmTransactions() error {
+// DecodeNonEvmTransactions decodes transactions for non-EVM chain types that
+// support decoding. It returns per-chain ok/failed counts; a removed endpoint
+// (404) aborts with a ContractBreakError.
+func (s *BlockchainService) DecodeNonEvmTransactions() (OpStats, error) {
+	var stats OpStats
+
 	for _, chainType := range nonEvmChainTypes {
 		if nonDecodableChainTypes[chainType] {
 			continue
@@ -435,33 +500,46 @@ func (s *BlockchainService) DecodeNonEvmTransactions() error {
 				Chain: chain.ID,
 			}
 
-			_, err := async.Post[models.EvmTransactionDecodeResult](s.asyncClient, "/blockchains/transactions/decode", requestData)
+			_, err := async.Post[models.TransactionDecodeResult](s.asyncClient, transactionsDecodeEndpoint, requestData)
 			if err != nil {
+				if client.IsEndpointMissing(err) {
+					return stats, &ContractBreakError{
+						Step:     "non-EVM transaction decode",
+						Endpoint: transactionsDecodeEndpoint,
+						Err:      err,
+					}
+				}
+				stats.Failed++
 				logger.Error("Failed to decode transactions for chain %s: %v", chain.ID, err)
 				continue
 			}
 
+			stats.Ok++
 			logger.Info("Decoded transactions for %s chain %s", chainType, chain.ID)
 		}
 	}
 
-	return nil
+	return stats, nil
 }
 
-// FetchOnlineEvents fetches online events
-func (s *BlockchainService) FetchOnlineEvents() error {
+// FetchOnlineEvents fetches online events. It returns per-query ok/failed
+// counts. When the eth2 module is inactive there is nothing to fetch and an
+// empty OpStats is returned.
+func (s *BlockchainService) FetchOnlineEvents() (OpStats, error) {
 	logger.Info("Fetching online events")
+
+	var stats OpStats
 
 	// Check if eth2 module is activated
 	isEth2Active, err := s.IsEth2ModuleActive()
 	if err != nil {
 		logger.Error("Failed to check eth2 module status: %v", err)
-		return fmt.Errorf("failed to check eth2 module status: %w", err)
+		return stats, fmt.Errorf("failed to check eth2 module status: %w", err)
 	}
 
 	if !isEth2Active {
 		logger.Info("Eth2 module is not active, skipping online events fetch")
-		return nil
+		return stats, nil
 	}
 
 	for _, queryType := range []models.QueryType{models.BlockProductionsQuery, models.EthWithdrawalsQuery} {
@@ -474,20 +552,30 @@ func (s *BlockchainService) FetchOnlineEvents() error {
 		// Use async for fetching history events
 		response, err := async.Post[bool](s.asyncClient, "/history/events/query", requestData)
 		if err != nil {
+			if client.IsEndpointMissing(err) {
+				return stats, &ContractBreakError{
+					Step:     "online events fetch",
+					Endpoint: "/history/events/query",
+					Err:      err,
+				}
+			}
+			stats.Failed++
 			logger.Error("Failed to fetch %s events: %v", queryType, err)
 			continue
 		}
 		if response == nil {
+			stats.Failed++
 			logger.Error("Received nil response for %s events", queryType)
 			continue
 		}
 
+		stats.Ok++
 		if response.Result {
 			logger.Info("Successfully fetched %s events", queryType)
 		}
 	}
 
-	return nil
+	return stats, nil
 }
 
 // Balance-related methods
