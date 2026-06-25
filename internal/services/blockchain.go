@@ -257,13 +257,7 @@ func (s *BlockchainService) DecodeEvmTransactions() (OpStats, error) {
 		}
 
 		stats.Ok++
-		// The decoded_tx_number map is keyed by chain; sum it so the count is
-		// reported regardless of whether the key is the chain id or evm name.
-		decoded := 0
-		for _, n := range response.Result.DecodedTxNumber {
-			decoded += n
-		}
-		if decoded > 0 {
+		if decoded := response.Result.DecodedTxNumber; decoded > 0 {
 			logger.Info("Decoded %d transactions for chain %s", decoded, chainID)
 		}
 	}

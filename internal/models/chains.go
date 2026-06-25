@@ -22,14 +22,12 @@ type Blockchain struct {
 // BlockchainResponse represents the API response for supported blockchains
 type BlockchainResponse = APIResponse[[]Blockchain]
 
-// DecodedTxNumber represents the number of decoded transactions per chain
-type DecodedTxNumber map[string]int
-
 // TransactionDecodeResult represents the result of decoding transactions via
-// the unified /blockchains/transactions/decode endpoint. The decoded_tx_number
-// map is keyed by chain and holds the per-chain decoded count.
+// the unified /blockchains/transactions/decode endpoint. Each request decodes a
+// single chain, so decoded_tx_number is a plain count (not the legacy
+// per-chain map that the removed /blockchains/evm/transactions/decode returned).
 type TransactionDecodeResult struct {
-	DecodedTxNumber DecodedTxNumber `json:"decoded_tx_number" validate:"required"`
+	DecodedTxNumber int `json:"decoded_tx_number"`
 }
 
 type QueryType string

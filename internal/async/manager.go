@@ -187,12 +187,21 @@ func executeHTTPRequest(tm *TaskManager, method, endpoint string, requestBody ma
 	return &asyncResponse, err
 }
 
+// taskHeartbeatInterval controls how often a still-running async task logs that
+// it is alive. Decoding a large backlog (or a rate-limited chain) can keep a
+// single task busy for many minutes; without this the run looks frozen because
+// nothing is logged between dispatching the task and its completion.
+const taskHeartbeatInterval = 30 * time.Second
+
 // waitForTaskResult waits for async task completion and unmarshals result.
 // A completed task can still describe a failed operation, so the outcome's
 // status_code/message is inspected before the result is treated as success.
-func waitForTaskResult[T any](tm *TaskManager, taskID models.TaskID) (*models.APIResponse[T], error) {
+// While waiting it emits a periodic heartbeat with elapsed time so a slow or
+// rate-limited backend task is visible instead of looking hung. desc is a short
+// label (typically the endpoint) used in those heartbeat lines.
+func waitForTaskResult[T any](tm *TaskManager, taskID models.TaskID, desc string) (*models.APIResponse[T], error) {
 	resultChan := tm.RegisterTask(taskID)
-	rawResult := <-resultChan
+	rawResult := waitWithHeartbeat(resultChan, taskID, desc)
 
 	// rawResult.Result is the task outcome JSON; rawResult.Message carries
 	// fetch-level errors set by fetchTaskResult (task not found / fetch failed).
@@ -217,6 +226,32 @@ func waitForTaskResult[T any](tm *TaskManager, taskID models.TaskID) (*models.AP
 	}
 
 	return &finalResponse, nil
+}
+
+// waitWithHeartbeat blocks until the task result arrives, logging an elapsed-time
+// heartbeat every taskHeartbeatInterval so a long-running backend task does not
+// look frozen. The final elapsed time is also logged once the result lands.
+func waitWithHeartbeat(
+	resultChan <-chan models.APIResponse[json.RawMessage],
+	taskID models.TaskID,
+	desc string,
+) models.APIResponse[json.RawMessage] {
+	start := time.Now()
+	ticker := time.NewTicker(taskHeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case rawResult := <-resultChan:
+			if elapsed := time.Since(start); elapsed >= taskHeartbeatInterval {
+				logger.Info("Async task %d (%s) finished after %s", taskID, desc, elapsed.Round(time.Second))
+			}
+			return rawResult
+		case <-ticker.C:
+			logger.Info("Still waiting on async task %d (%s); %s elapsed",
+				taskID, desc, time.Since(start).Round(time.Second))
+		}
+	}
 }
 
 func ExecuteAsync[T any](
@@ -248,5 +283,5 @@ func ExecuteAsync[T any](
 		return nil, fmt.Errorf("failed to initiate async request: %w", err)
 	}
 
-	return waitForTaskResult[T](tm, asyncResponse.Result.TaskID)
+	return waitForTaskResult[T](tm, asyncResponse.Result.TaskID, endpoint)
 }
