@@ -12,6 +12,13 @@ BINARY_NAME=rotki-sync
 BINARY_UNIX=$(BINARY_NAME)_unix
 MAIN_PATH=./cmd/sync
 
+# Version stamp injected into the binary via -ldflags. Overridable from the
+# environment (e.g. CI) but defaults to git-derived values.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
 # Linting
 GOLINT=golangci-lint
 
@@ -20,7 +27,7 @@ GOLINT=golangci-lint
 all: lint fmt build
 
 build:
-	$(GOBUILD) -o $(BINARY_NAME) -v $(MAIN_PATH)
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) -v $(MAIN_PATH)
 
 clean:
 	$(GOCLEAN)
@@ -48,13 +55,13 @@ download-golangci-lint:
 
 # cross-compilation for different platforms
 build-linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BINARY_UNIX) -v $(MAIN_PATH)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY_UNIX) -v $(MAIN_PATH)
 
 build-windows:
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -o $(BINARY_NAME).exe -v $(MAIN_PATH)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME).exe -v $(MAIN_PATH)
 
 build-darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GOBUILD) -o $(BINARY_NAME)_darwin -v $(MAIN_PATH)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME)_darwin -v $(MAIN_PATH)
 
 help:
 	@echo "Available commands:"

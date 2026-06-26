@@ -21,6 +21,14 @@ import (
 	"github.com/kelsos/rotki-sync/internal/utils"
 )
 
+// Build-time version stamp, injected via -ldflags "-X main.version=..." by the
+// Makefile. Defaults make a plain `go build` (no ldflags) still report sanely.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 // Exit codes communicate the run outcome to the cron wrapper so a broken sync
 // can never look green again.
 const (
@@ -199,6 +207,11 @@ func confirmRotkiVersion(syncService *services.SyncService, skipPrompt bool) boo
 	}
 }
 
+// versionString renders the build stamp as "rotki-sync <version> (commit <c>, built <date>)".
+func versionString() string {
+	return fmt.Sprintf("rotki-sync %s (commit %s, built %s)", version, commit, date)
+}
+
 func main() {
 	utils.LoadEnvironment()
 
@@ -219,11 +232,23 @@ func main() {
 	exitCode := exitOK
 
 	rootCmd := &cobra.Command{
-		Use:   "rotki-sync",
-		Short: "A CLI tool for syncing rotki data",
-		Long:  `rotki-sync is a CLI tool for syncing rotki data from various sources.`,
+		Use:     "rotki-sync",
+		Short:   "A CLI tool for syncing rotki data",
+		Long:    `rotki-sync is a CLI tool for syncing rotki data from various sources.`,
+		Version: version,
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = runSync(cfg, disableTUI, skipConfirm)
+		},
+	}
+	// Richer `--version` output than cobra's default one-liner, and a matching
+	// `version` subcommand for callers that prefer it.
+	rootCmd.SetVersionTemplate(versionString() + "\n")
+
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print version, commit, and build date",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println(versionString())
 		},
 	}
 
@@ -292,6 +317,7 @@ func main() {
 	rootCmd.AddCommand(downloadCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(preflightCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	// Execute the root command
 	if err := rootCmd.Execute(); err != nil {
