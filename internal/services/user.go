@@ -2,27 +2,29 @@ package services
 
 import (
 	"fmt"
-	"os"
 	"sort"
-	"strings"
 
 	"github.com/kelsos/rotki-sync/internal/async"
 	"github.com/kelsos/rotki-sync/internal/client"
 	"github.com/kelsos/rotki-sync/internal/logger"
 	"github.com/kelsos/rotki-sync/internal/models"
+	"github.com/kelsos/rotki-sync/internal/secrets"
 )
 
 // UserService handles user-related operations
 type UserService struct {
 	client      *client.APIClient
 	asyncClient *async.Client
+	secrets     *secrets.Store
 }
 
 // NewUserServiceWithAsyncClient creates a new user service with an async client
-func NewUserServiceWithAsyncClient(client *client.APIClient, asyncClient *async.Client) *UserService {
+// and the secret store used to resolve per-user login passwords.
+func NewUserServiceWithAsyncClient(client *client.APIClient, asyncClient *async.Client, store *secrets.Store) *UserService {
 	return &UserService{
 		client:      client,
 		asyncClient: asyncClient,
+		secrets:     store,
 	}
 }
 
@@ -42,16 +44,16 @@ func (s *UserService) GetUsers() ([]string, error) {
 	return users, nil
 }
 
-// Login logs in a user with password from environment variable
+// Login logs in a user with the password resolved from the secret store.
 func (s *UserService) Login(username string) error {
 	logger.Info("Logging in user %s", username)
 
-	// Get password from environment variable
-	passwordEnvVar := fmt.Sprintf("%s_PASSWORD", strings.ToUpper(username))
-	password := os.Getenv(passwordEnvVar)
-
-	if password == "" {
-		return fmt.Errorf("missing environment variable %s for user %s", passwordEnvVar, username)
+	password, ok, err := s.secrets.Get(secrets.ScopeUsers, username)
+	if err != nil {
+		return fmt.Errorf("failed to read stored password for user %s: %w", username, err)
+	}
+	if !ok || password == "" {
+		return fmt.Errorf("no stored password for user %s; run: rotki-sync secret set %s", username, username)
 	}
 
 	endpoint := fmt.Sprintf("/users/%s", username)

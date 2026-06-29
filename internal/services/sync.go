@@ -13,6 +13,7 @@ import (
 	"github.com/kelsos/rotki-sync/internal/models"
 	"github.com/kelsos/rotki-sync/internal/process"
 	"github.com/kelsos/rotki-sync/internal/progress"
+	"github.com/kelsos/rotki-sync/internal/secrets"
 )
 
 // SyncService orchestrates the data synchronization process
@@ -39,13 +40,15 @@ func NewSyncService(cfg *config.Config) *SyncService {
 	progressTracker := progress.NewTracker(process.LogFilePath())
 	taskManager.SetProgressReporter(progressTracker)
 
+	store := secrets.Default()
+
 	return &SyncService{
 		config:      cfg,
 		client:      apiClient,
 		taskManager: taskManager,
 		asyncClient: asyncClient,
 		progress:    progressTracker,
-		user:        NewUserServiceWithAsyncClient(apiClient, asyncClient),
+		user:        NewUserServiceWithAsyncClient(apiClient, asyncClient, store),
 		blockchain:  NewBlockchainServiceWithAsyncClient(apiClient, asyncClient),
 		exchange:    NewExchangeServiceWithAsyncClient(apiClient, asyncClient),
 	}
@@ -202,6 +205,39 @@ func (s *SyncService) Cleanup() {
 // GetUsers retrieves all users from the system
 func (s *SyncService) GetUsers() ([]string, error) {
 	return s.user.GetUsers()
+}
+
+// CredentialCheck is the per-user outcome of CheckCredentials.
+type CredentialCheck struct {
+	Username string
+	OK       bool
+	Err      error
+}
+
+// CheckCredentials logs in then immediately logs out every user, verifying their
+// stored password authenticates against the running backend. It performs no sync
+// work and requires the API to be ready. A user without a stored password (or
+// with a wrong one) is reported as a failed check rather than aborting the rest.
+func (s *SyncService) CheckCredentials() ([]CredentialCheck, error) {
+	users, err := s.GetUsers()
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]CredentialCheck, 0, len(users))
+	for _, username := range users {
+		result := CredentialCheck{Username: username}
+		if err := s.user.Login(username); err != nil {
+			result.Err = err
+		} else {
+			result.OK = true
+			if err := s.user.Logout(username); err != nil {
+				logger.Warn("Failed to log out %s after credential check: %v", username, err)
+			}
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
 // ProcessUsersWithCallback processes all users with callbacks for monitoring
