@@ -120,21 +120,27 @@ func runSync(cfg *config.Config, disableTUI, skipConfirm bool) int {
 		if err := monitor.Run(); err != nil {
 			logger.Error("Error running TUI monitor: %v", err)
 		}
+		// The TUI has exited because the user pressed 'q' (or ctrl+c). Stop
+		// rotki-core and return immediately rather than waiting on it, so the
+		// process terminates completely. Any still-running sync work is in a
+		// background goroutine that ends when the process exits.
+		stopRotki(rotki)
+		return exitCode
+	}
+
+	report, err := syncService.ProcessAllUsers()
+	if err != nil {
+		logger.Error("Error processing users: %v", err)
+	}
+	exitCode = reportExitCode(report)
+	logger.Info("%s", report.Summary())
+	if exitCode == exitOK {
+		logger.Info("Sync completed successfully")
 	} else {
-		report, err := syncService.ProcessAllUsers()
-		if err != nil {
-			logger.Error("Error processing users: %v", err)
-		}
-		exitCode = reportExitCode(report)
-		logger.Info("%s", report.Summary())
-		if exitCode == exitOK {
-			logger.Info("Sync completed successfully")
-		} else {
-			logger.Error("Sync completed with failures (exit %d)", exitCode)
-			alert.Notify(
-				fmt.Sprintf("rotki-sync: run failed (exit %d)", exitCode),
-				report.Summary())
-		}
+		logger.Error("Sync completed with failures (exit %d)", exitCode)
+		alert.Notify(
+			fmt.Sprintf("rotki-sync: run failed (exit %d)", exitCode),
+			report.Summary())
 	}
 
 	if err := rotki.WaitForExit(); err != nil {
