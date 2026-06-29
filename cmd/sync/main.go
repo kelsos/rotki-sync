@@ -319,6 +319,7 @@ func main() {
 	rootCmd.AddCommand(preflightCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(secretCmd(cfg))
+	rootCmd.AddCommand(serviceCmd())
 
 	// Add an `install` subcommand under Cobra's auto-generated `completion`
 	// command (which only prints), so users can install/update completions in
