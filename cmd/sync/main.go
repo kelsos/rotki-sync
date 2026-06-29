@@ -319,6 +319,18 @@ func main() {
 	rootCmd.AddCommand(preflightCmd)
 	rootCmd.AddCommand(versionCmd)
 
+	// Add an `install` subcommand under Cobra's auto-generated `completion`
+	// command (which only prints), so users can install/update completions in
+	// one step. InitDefaultCompletionCmd materializes that command now; Execute
+	// sees it already present and won't re-add it.
+	rootCmd.InitDefaultCompletionCmd()
+	for _, sub := range rootCmd.Commands() {
+		if sub.Name() == "completion" {
+			sub.AddCommand(completionInstallCmd(rootCmd))
+			break
+		}
+	}
+
 	// Execute the root command
 	if err := rootCmd.Execute(); err != nil {
 		logger.Fatal("Failed to execute command: %v", err)
