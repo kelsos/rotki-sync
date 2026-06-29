@@ -11,6 +11,8 @@ import (
 	"github.com/kelsos/rotki-sync/internal/config"
 	"github.com/kelsos/rotki-sync/internal/logger"
 	"github.com/kelsos/rotki-sync/internal/models"
+	"github.com/kelsos/rotki-sync/internal/process"
+	"github.com/kelsos/rotki-sync/internal/progress"
 )
 
 // SyncService orchestrates the data synchronization process
@@ -19,6 +21,7 @@ type SyncService struct {
 	client      *client.APIClient
 	taskManager *async.TaskManager
 	asyncClient *async.Client
+	progress    *progress.Tracker
 	user        *UserService
 	blockchain  *BlockchainService
 	exchange    *ExchangeService
@@ -30,11 +33,18 @@ func NewSyncService(cfg *config.Config) *SyncService {
 	taskManager := async.NewTaskManager(apiClient)
 	asyncClient := async.NewClient(taskManager)
 
+	// The progress tracker enriches async-task heartbeats with live decode
+	// progress (websocket) and rate-limit causes (log tail). The websocket is
+	// started once the API is ready (see WaitForAPIReady).
+	progressTracker := progress.NewTracker(process.LogFilePath())
+	taskManager.SetProgressReporter(progressTracker)
+
 	return &SyncService{
 		config:      cfg,
 		client:      apiClient,
 		taskManager: taskManager,
 		asyncClient: asyncClient,
+		progress:    progressTracker,
 		user:        NewUserServiceWithAsyncClient(apiClient, asyncClient),
 		blockchain:  NewBlockchainServiceWithAsyncClient(apiClient, asyncClient),
 		exchange:    NewExchangeServiceWithAsyncClient(apiClient, asyncClient),
@@ -152,9 +162,15 @@ func (s *SyncService) PreflightEndpoints() error {
 	return nil
 }
 
-// WaitForAPIReady waits for the API to become ready
+// WaitForAPIReady waits for the API to become ready. Once it is, the progress
+// websocket is started so subsequent async-task heartbeats can report live
+// decode progress.
 func (s *SyncService) WaitForAPIReady() bool {
-	return s.client.WaitForAPIReady()
+	ready := s.client.WaitForAPIReady()
+	if ready && s.progress != nil {
+		s.progress.StartWebsocket(s.config.Port)
+	}
+	return ready
 }
 
 // GetInfo fetches general information about the running rotki backend,
@@ -172,10 +188,14 @@ func (s *SyncService) GetConfig() *config.Config {
 	return s.config
 }
 
-// Cleanup performs cleanup operations including stopping the task manager
+// Cleanup performs cleanup operations including stopping the task manager and
+// the progress websocket.
 func (s *SyncService) Cleanup() {
 	if s.taskManager != nil {
 		s.taskManager.Stop()
+	}
+	if s.progress != nil {
+		s.progress.Close()
 	}
 }
 

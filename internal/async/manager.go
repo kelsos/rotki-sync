@@ -12,6 +12,14 @@ import (
 	"github.com/kelsos/rotki-sync/internal/models"
 )
 
+// ProgressReporter supplies a short, human-readable annotation describing what a
+// running backend task is currently doing (and why it may be slow), folded into
+// the heartbeat. Implementations must be safe for concurrent use and must not
+// block.
+type ProgressReporter interface {
+	Snapshot() string
+}
+
 type TaskManager struct {
 	client        *client.APIClient
 	activeTasks   map[models.TaskID]chan<- models.APIResponse[json.RawMessage]
@@ -19,6 +27,7 @@ type TaskManager struct {
 	pollInterval  time.Duration
 	stopPolling   chan struct{}
 	pollingActive bool
+	progress      ProgressReporter
 }
 
 func NewTaskManager(apiClient *client.APIClient) *TaskManager {
@@ -28,6 +37,20 @@ func NewTaskManager(apiClient *client.APIClient) *TaskManager {
 		pollInterval: time.Second,
 		stopPolling:  make(chan struct{}),
 	}
+}
+
+// SetProgressReporter installs an optional reporter consulted on each heartbeat
+// tick to annotate what a slow task is doing. Passing nil disables annotation.
+func (tm *TaskManager) SetProgressReporter(reporter ProgressReporter) {
+	tm.mu.Lock()
+	tm.progress = reporter
+	tm.mu.Unlock()
+}
+
+func (tm *TaskManager) progressReporter() ProgressReporter {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	return tm.progress
 }
 
 func (tm *TaskManager) RegisterTask(taskID models.TaskID) <-chan models.APIResponse[json.RawMessage] {
@@ -201,7 +224,7 @@ const taskHeartbeatInterval = 30 * time.Second
 // label (typically the endpoint) used in those heartbeat lines.
 func waitForTaskResult[T any](tm *TaskManager, taskID models.TaskID, desc string) (*models.APIResponse[T], error) {
 	resultChan := tm.RegisterTask(taskID)
-	rawResult := waitWithHeartbeat(resultChan, taskID, desc)
+	rawResult := waitWithHeartbeat(resultChan, taskID, desc, tm.progressReporter())
 
 	// rawResult.Result is the task outcome JSON; rawResult.Message carries
 	// fetch-level errors set by fetchTaskResult (task not found / fetch failed).
@@ -235,6 +258,7 @@ func waitWithHeartbeat(
 	resultChan <-chan models.APIResponse[json.RawMessage],
 	taskID models.TaskID,
 	desc string,
+	reporter ProgressReporter,
 ) models.APIResponse[json.RawMessage] {
 	start := time.Now()
 	ticker := time.NewTicker(taskHeartbeatInterval)
@@ -248,10 +272,23 @@ func waitWithHeartbeat(
 			}
 			return rawResult
 		case <-ticker.C:
-			logger.Info("Still waiting on async task %d (%s); %s elapsed",
-				taskID, desc, time.Since(start).Round(time.Second))
+			elapsed := time.Since(start).Round(time.Second)
+			if ann := annotation(reporter); ann != "" {
+				logger.Info("Async task %d (%s): %s (%s elapsed)", taskID, desc, ann, elapsed)
+			} else {
+				logger.Info("Still waiting on async task %d (%s); %s elapsed", taskID, desc, elapsed)
+			}
 		}
 	}
+}
+
+// annotation safely fetches the current progress annotation, tolerating a nil
+// reporter so the heartbeat works with or without progress monitoring.
+func annotation(reporter ProgressReporter) string {
+	if reporter == nil {
+		return ""
+	}
+	return reporter.Snapshot()
 }
 
 func ExecuteAsync[T any](

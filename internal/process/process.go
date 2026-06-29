@@ -12,6 +12,19 @@ import (
 	"github.com/kelsos/rotki-sync/internal/logger"
 )
 
+// logDirName and logFileName locate the rotki-core log file, written relative
+// to the working directory. LogFilePath is the single source of truth for this
+// path so the launcher and the log-tailing progress tracker stay in sync.
+const (
+	logDirName  = "logs"
+	logFileName = "rotki-core.log"
+)
+
+// LogFilePath returns the path rotki-core is configured to log to.
+func LogFilePath() string {
+	return filepath.Join(logDirName, logFileName)
+}
+
 // RotkiProcess represents a running rotki-core process
 type RotkiProcess struct {
 	Cmd     *exec.Cmd
@@ -45,13 +58,12 @@ func StartRotkiCore(binPath string, port int, apiReadyTimeout int, dataDir strin
 	}
 
 	// Create logs directory if it doesn't exist
-	logDir := "logs"
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(logDirName, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
 	// Configure rotki-core to log to file in the logs directory
-	logPath := filepath.Join(logDir, "rotki-core.log")
+	logPath := LogFilePath()
 	args = append(args, "--logtarget", "file", "--logfile", logPath)
 
 	logger.Info("rotki-core logs will be written to: %s", logPath)
