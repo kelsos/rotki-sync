@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/kelsos/rotki-sync/internal/logger"
@@ -21,6 +22,24 @@ const logFileName = "rotki-core.log"
 // LogFilePath returns the path rotki-core is configured to log to.
 func LogFilePath() string {
 	return filepath.Join(paths.LogDir(), logFileName)
+}
+
+// filterChildEnv returns env with rotki-sync's secrets removed: the age key and
+// any variable whose name ends in _PASSWORD. Everything else (PATH, HOME, locale,
+// etc.) is preserved so rotki-core starts normally.
+func filterChildEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			name = kv[:i]
+		}
+		if name == "ROTKI_SYNC_AGE_KEY" || strings.HasSuffix(name, "_PASSWORD") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // RotkiProcess represents a running rotki-core process
@@ -70,6 +89,9 @@ func StartRotkiCore(binPath string, port int, apiReadyTimeout int, dataDir strin
 	cmd := exec.Command(binPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// rotki-core has no need for rotki-sync's secrets; strip the age key and any
+	// legacy *_PASSWORD vars so they never reach the child's environment.
+	cmd.Env = filterChildEnv(os.Environ())
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start rotki-core: %w", err)
