@@ -5,12 +5,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/kelsos/rotki-sync/internal/paths"
 )
+
+// defaultLogKeep is the number of most-recent per-run rotki-sync_*.log files
+// kept when pruning. Overridable via ROTKI_SYNC_LOG_KEEP.
+const defaultLogKeep = 20
 
 var log zerolog.Logger
 var logFile *os.File
@@ -60,8 +66,44 @@ func InitFileOnly() error {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 
+	// A fresh per-run log file is created every run; prune old ones so they do
+	// not accumulate unbounded. (rotki-core rotates its own log separately.)
+	pruneOldLogs(logDir, logKeepCount())
+
 	Info("Logger initialized in file-only mode: %s", logPath)
 	return nil
+}
+
+// logKeepCount returns how many recent per-run log files to keep, from
+// ROTKI_SYNC_LOG_KEEP when set to a valid non-negative integer, else the
+// default. A value of 0 disables pruning.
+func logKeepCount() int {
+	if v := os.Getenv("ROTKI_SYNC_LOG_KEEP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return defaultLogKeep
+}
+
+// pruneOldLogs deletes all but the newest keep rotki-sync_*.log files in dir.
+// The timestamped file name sorts chronologically, so a reverse lexical sort
+// puts the newest first. It is best-effort: failures are logged at debug and do
+// not interrupt the run. keep <= 0 disables pruning.
+func pruneOldLogs(dir string, keep int) {
+	if keep <= 0 {
+		return
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "rotki-sync_*.log"))
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+	for _, path := range matches[keep:] {
+		if err := os.Remove(path); err != nil {
+			Debug("Could not prune old log %s: %v", path, err)
+		}
+	}
 }
 
 // Close closes the log file if it's open
