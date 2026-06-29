@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/kelsos/rotki-sync/internal/logger"
 	"github.com/kelsos/rotki-sync/internal/paths"
@@ -116,38 +114,4 @@ func (r *RotkiProcess) Stop() error {
 	}
 	logger.Info("Stopping rotki-core...")
 	return r.Process.Kill()
-}
-
-// WaitForExit waits for the rotki-core process to exit or for a signal to terminate it
-func (r *RotkiProcess) WaitForExit() error {
-	// Set up a channel to handle signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Set up a channel to handle process exit
-	done := make(chan error, 1)
-	go func() {
-		done <- r.Cmd.Wait()
-	}()
-
-	// Wait for a signal or for the process to exit
-	select {
-	case sig := <-sigChan:
-		logger.Info("Received signal %v, terminating rotki-core...", sig)
-		if r.Process != nil {
-			err := r.Process.Kill()
-			if err != nil {
-				return err
-			}
-		}
-		return fmt.Errorf("process terminated by signal: %v", sig)
-	case err := <-done:
-		if err != nil {
-			logger.Error("rotki-core exited with error: %v", err)
-			return fmt.Errorf("process exited with error: %w", err)
-		} else {
-			logger.Info("rotki-core exited successfully")
-			return nil
-		}
-	}
 }

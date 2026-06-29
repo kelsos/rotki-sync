@@ -136,17 +136,19 @@ func runSync(cfg *config.Config, disableTUI, skipConfirm bool) int {
 	logger.Info("%s", report.Summary())
 	if exitCode == exitOK {
 		logger.Info("Sync completed successfully")
+		alert.Desktop("rotki-sync", fmt.Sprintf("Sync completed successfully (%d user(s))", len(report.Users)), alert.UrgencyNormal)
 	} else {
 		logger.Error("Sync completed with failures (exit %d)", exitCode)
 		alert.Notify(
 			fmt.Sprintf("rotki-sync: run failed (exit %d)", exitCode),
 			report.Summary())
+		alert.Desktop("rotki-sync", fmt.Sprintf("Sync failed (exit %d) — see logs", exitCode), alert.UrgencyCritical)
 	}
 
-	if err := rotki.WaitForExit(); err != nil {
-		logger.Error("Error waiting for rotki-core to exit: %v", err)
-	}
-
+	// The sync is done; stop rotki-core and return so the process exits. rotki-core
+	// does not exit on its own, so waiting on it would hang an unattended run (e.g.
+	// the systemd timer).
+	stopRotki(rotki)
 	return exitCode
 }
 

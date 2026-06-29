@@ -8,9 +8,18 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/kelsos/rotki-sync/internal/logger"
+)
+
+// Urgency maps to notify-send's --urgency levels for desktop notifications.
+type Urgency string
+
+const (
+	UrgencyNormal   Urgency = "normal"
+	UrgencyCritical Urgency = "critical"
 )
 
 // webhookEnvVar names the environment variable holding the alert webhook URL.
@@ -57,4 +66,33 @@ func Notify(title, body string) {
 	}
 
 	logger.Info("Failure alert delivered to webhook")
+}
+
+// Desktop shows a best-effort desktop notification via notify-send (libnotify),
+// suited to the local --user timer. It is a no-op when notify-send is not
+// installed; delivery failures are logged, never returned, so a notification can
+// never affect the run's outcome.
+func Desktop(title, body string, urgency Urgency) {
+	path, err := exec.LookPath("notify-send")
+	if err != nil {
+		logger.Debug("Desktop notifications unavailable (notify-send not found)")
+		return
+	}
+
+	// #nosec G204 - path comes from LookPath; args are app-controlled, not user input
+	cmd := exec.Command(path, notifySendArgs(title, body, urgency)...)
+	if err := cmd.Run(); err != nil {
+		logger.Debug("Failed to send desktop notification: %v", err)
+		return
+	}
+	logger.Debug("Desktop notification sent: %s", title)
+}
+
+// notifySendArgs builds the notify-send argument list (separated for testing).
+func notifySendArgs(title, body string, urgency Urgency) []string {
+	args := []string{"--app-name=rotki-sync"}
+	if urgency != "" {
+		args = append(args, "--urgency="+string(urgency))
+	}
+	return append(args, title, body)
 }
