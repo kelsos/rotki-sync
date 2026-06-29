@@ -16,11 +16,11 @@ import (
 // excludedChains contains chains that should be excluded from EVM operations
 // (transaction fetch, decode, and token detection).
 //
-// avalanche has been excluded since the original CLI (commit 336a3d5) with no
-// recorded reason. It predates the migration to the unified
-// /blockchains/transactions[/decode] endpoints, which may have resolved
-// whatever originally broke it. Removal is pending a live verification against
-// a real avalanche account; until then it stays to avoid a regression.
+// avalanche is excluded because rotki-core does not support transaction/history
+// retrieval for it: accounts are still enumerated for balances, but there is no
+// transaction source to fetch or decode, so attempting those operations is a
+// no-op at best. This was verified against a live run (avalanche accounts are
+// found but have no tx history path).
 var excludedChains = map[string]bool{
 	"avalanche": true,
 	// Add other chains to exclude here if needed in the future
@@ -524,17 +524,21 @@ func (s *BlockchainService) DecodeNonEvmTransactions() (OpStats, error) {
 }
 
 // FetchOnlineEvents fetches online events. It returns per-query ok/failed
-// counts. The eth2-specific queries (block_productions, eth_withdrawals) are
-// only attempted when the eth2 module is active; gnosis_pay and monerium are
-// not eth2-gated and are always attempted (matching the desktop client). An
-// account lacking a given integration is expected to no-op rather than error.
+// counts. Each query type is gated on whether its integration is set up:
+// gnosis_pay and monerium only when their credentials are configured, and the
+// eth2-specific queries (block_productions, eth_withdrawals) only when the eth2
+// module is active. Gating avoids a recurring per-run failure from querying an
+// integration the user has not enabled.
 func (s *BlockchainService) FetchOnlineEvents() (OpStats, error) {
 	logger.Info("Fetching online events")
 
 	var stats OpStats
 
-	// gnosis_pay and monerium are independent integrations, not part of eth2.
-	queryTypes := []models.QueryType{models.GnosisPayQuery, models.MoneriumQuery}
+	// gnosis_pay and monerium are independent integrations, not part of eth2;
+	// include them only when configured.
+	queryTypes := make([]models.QueryType, 0, 4)
+	queryTypes = s.appendIfConfigured(queryTypes, "gnosis_pay", models.GnosisPayQuery, s.isGnosisPayConfigured)
+	queryTypes = s.appendIfConfigured(queryTypes, "monerium", models.MoneriumQuery, s.isMoneriumConfigured)
 
 	// Check if eth2 module is activated before adding its query types.
 	isEth2Active, err := s.IsEth2ModuleActive()
@@ -546,6 +550,11 @@ func (s *BlockchainService) FetchOnlineEvents() (OpStats, error) {
 		queryTypes = append(queryTypes, models.BlockProductionsQuery, models.EthWithdrawalsQuery)
 	} else {
 		logger.Info("Eth2 module is not active, skipping eth2 online events")
+	}
+
+	if len(queryTypes) == 0 {
+		logger.Info("No online-event integrations are configured; nothing to fetch")
+		return stats, nil
 	}
 
 	for _, queryType := range queryTypes {
@@ -582,6 +591,61 @@ func (s *BlockchainService) FetchOnlineEvents() (OpStats, error) {
 	}
 
 	return stats, nil
+}
+
+// appendIfConfigured adds query to queryTypes when check reports the integration
+// named name as configured. If the check itself fails the query is still added
+// (fail-loud: a transient status-check error must not silently drop a
+// configured integration); when not configured it is skipped with an info log.
+func (s *BlockchainService) appendIfConfigured(
+	queryTypes []models.QueryType,
+	name string,
+	query models.QueryType,
+	check func() (bool, error),
+) []models.QueryType {
+	configured, err := check()
+	if err != nil {
+		logger.Debug("Could not determine %s status, attempting anyway: %v", name, err)
+		return append(queryTypes, query)
+	}
+	if !configured {
+		logger.Info("%s is not configured, skipping its online events", name)
+		return queryTypes
+	}
+	return append(queryTypes, query)
+}
+
+// isMoneriumConfigured reports whether Monerium OAuth credentials are present,
+// via GET /services/monerium ({"result": {"authenticated": bool}}).
+func (s *BlockchainService) isMoneriumConfigured() (bool, error) {
+	var response map[string]interface{}
+	if err := s.client.Get("/services/monerium", &response); err != nil {
+		return false, fmt.Errorf("failed to get monerium status: %w", err)
+	}
+
+	result, ok := response["result"].(map[string]interface{})
+	if !ok {
+		return false, nil
+	}
+	authenticated, _ := result["authenticated"].(bool)
+	return authenticated, nil
+}
+
+// isGnosisPayConfigured reports whether Gnosis Pay credentials are present. The
+// GET /external_services result is a map keyed by configured service name, so
+// the presence of a "gnosis_pay" key means credentials are stored.
+func (s *BlockchainService) isGnosisPayConfigured() (bool, error) {
+	var response map[string]interface{}
+	if err := s.client.Get("/external_services", &response); err != nil {
+		return false, fmt.Errorf("failed to get external services: %w", err)
+	}
+
+	result, ok := response["result"].(map[string]interface{})
+	if !ok {
+		return false, nil
+	}
+	_, configured := result["gnosis_pay"]
+	return configured, nil
 }
 
 // Balance-related methods
