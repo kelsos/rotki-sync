@@ -14,6 +14,13 @@ import (
 )
 
 // excludedChains contains chains that should be excluded from EVM operations
+// (transaction fetch, decode, and token detection).
+//
+// avalanche has been excluded since the original CLI (commit 336a3d5) with no
+// recorded reason. It predates the migration to the unified
+// /blockchains/transactions[/decode] endpoints, which may have resolved
+// whatever originally broke it. Removal is pending a live verification against
+// a real avalanche account; until then it stays to avoid a regression.
 var excludedChains = map[string]bool{
 	"avalanche": true,
 	// Add other chains to exclude here if needed in the future
