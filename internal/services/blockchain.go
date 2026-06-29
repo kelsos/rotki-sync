@@ -517,26 +517,31 @@ func (s *BlockchainService) DecodeNonEvmTransactions() (OpStats, error) {
 }
 
 // FetchOnlineEvents fetches online events. It returns per-query ok/failed
-// counts. When the eth2 module is inactive there is nothing to fetch and an
-// empty OpStats is returned.
+// counts. The eth2-specific queries (block_productions, eth_withdrawals) are
+// only attempted when the eth2 module is active; gnosis_pay and monerium are
+// not eth2-gated and are always attempted (matching the desktop client). An
+// account lacking a given integration is expected to no-op rather than error.
 func (s *BlockchainService) FetchOnlineEvents() (OpStats, error) {
 	logger.Info("Fetching online events")
 
 	var stats OpStats
 
-	// Check if eth2 module is activated
+	// gnosis_pay and monerium are independent integrations, not part of eth2.
+	queryTypes := []models.QueryType{models.GnosisPayQuery, models.MoneriumQuery}
+
+	// Check if eth2 module is activated before adding its query types.
 	isEth2Active, err := s.IsEth2ModuleActive()
 	if err != nil {
 		logger.Error("Failed to check eth2 module status: %v", err)
 		return stats, fmt.Errorf("failed to check eth2 module status: %w", err)
 	}
-
-	if !isEth2Active {
-		logger.Info("Eth2 module is not active, skipping online events fetch")
-		return stats, nil
+	if isEth2Active {
+		queryTypes = append(queryTypes, models.BlockProductionsQuery, models.EthWithdrawalsQuery)
+	} else {
+		logger.Info("Eth2 module is not active, skipping eth2 online events")
 	}
 
-	for _, queryType := range []models.QueryType{models.BlockProductionsQuery, models.EthWithdrawalsQuery} {
+	for _, queryType := range queryTypes {
 		logger.Info("Fetching %s events", queryType)
 
 		requestData := models.EventsQueryPayload{

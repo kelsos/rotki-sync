@@ -35,6 +35,8 @@ type QueryType string
 const (
 	EthWithdrawalsQuery   QueryType = "eth_withdrawals"
 	BlockProductionsQuery QueryType = "block_productions"
+	GnosisPayQuery        QueryType = "gnosis_pay"
+	MoneriumQuery         QueryType = "monerium"
 )
 
 type EventsQueryPayload struct {
