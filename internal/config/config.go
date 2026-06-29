@@ -7,16 +7,19 @@ import (
 	"runtime"
 	"strconv"
 	"time"
+
+	"github.com/kelsos/rotki-sync/internal/paths"
 )
 
 // defaultBinPath returns the default path to the rotki-core executable inside
-// the extracted onedir bundle.
+// the extracted onedir bundle, anchored to rotki-sync's data home so an
+// installed binary resolves it the same way from any working directory.
 func defaultBinPath() string {
 	exe := "rotki-core"
 	if runtime.GOOS == "windows" {
 		exe = "rotki-core.exe"
 	}
-	return filepath.Join("bin", "rotki-core", exe)
+	return filepath.Join(paths.BinDir(), "rotki-core", exe)
 }
 
 // Config holds all application configuration

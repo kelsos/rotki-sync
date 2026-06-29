@@ -17,17 +17,17 @@ import (
 	"strings"
 
 	"github.com/kelsos/rotki-sync/internal/logger"
+	"github.com/kelsos/rotki-sync/internal/paths"
 )
 
 const (
 	// GitHubAPIURL is the URL for the GitHub API to get the latest release
 	GitHubAPIURL = "https://api.github.com/repos/rotki/rotki/releases/latest"
-	// BinDir is the directory where the binary will be installed
-	BinDir  = "bin"
-	Darwin  = "darwin"
-	Linux   = "linux"
-	Windows = "windows"
-	// InstallDirName is the folder inside BinDir that holds the extracted onedir bundle
+	Darwin       = "darwin"
+	Linux        = "linux"
+	Windows      = "windows"
+	// InstallDirName is the folder inside the bin directory that holds the
+	// extracted onedir bundle
 	InstallDirName = "rotki-core"
 )
 
@@ -47,11 +47,12 @@ type GithubRelease struct {
 
 // ensureBinDir ensures that the bin directory exists
 func ensureBinDir() error {
-	if _, err := os.Stat(BinDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(BinDir, 0755); err != nil {
+	binDir := paths.BinDir()
+	if _, err := os.Stat(binDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(binDir, 0755); err != nil {
 			return fmt.Errorf("failed to create bin directory: %w", err)
 		}
-		logger.Info("Created bin directory at %s", BinDir)
+		logger.Info("Created bin directory at %s", binDir)
 	}
 	return nil
 }
@@ -94,7 +95,7 @@ func executableName() string {
 
 // InstalledBinaryPath returns the path to the installed rotki-core executable.
 func InstalledBinaryPath() string {
-	return filepath.Join(BinDir, InstallDirName, executableName())
+	return filepath.Join(paths.BinDir(), InstallDirName, executableName())
 }
 
 // downloadFile downloads a file from a URL to a destination path
@@ -450,10 +451,11 @@ func findBundleExecutable(bundleRoot string) (string, error) {
 	return "", fmt.Errorf("could not find rotki-core executable in extracted bundle %s", bundleRoot)
 }
 
-// installBundle moves the extracted bundle into BinDir/rotki-core, renames the inner
+// installBundle moves the extracted bundle into <bin>/rotki-core, renames the inner
 // executable to a stable name, and ensures it is executable. Returns the final exe path.
 func installBundle(bundleRoot, versionedExePath string) (string, error) {
-	installDir := filepath.Join(BinDir, InstallDirName)
+	binDir := paths.BinDir()
+	installDir := filepath.Join(binDir, InstallDirName)
 	logger.Info("Installing to %s...", installDir)
 
 	// Remove any previous install (old onefile binary path OR existing onedir folder).
@@ -461,7 +463,7 @@ func installBundle(bundleRoot, versionedExePath string) (string, error) {
 		return "", fmt.Errorf("failed to remove existing install: %w", err)
 	}
 
-	if err := os.MkdirAll(BinDir, 0755); err != nil {
+	if err := os.MkdirAll(binDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to ensure bin directory: %w", err)
 	}
 

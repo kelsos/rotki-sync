@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/kelsos/rotki-sync/internal/paths"
 )
 
 var log zerolog.Logger
@@ -34,7 +36,7 @@ func Init() {
 // InitFileOnly initializes the logger to write only to a file (for TUI mode)
 func InitFileOnly() error {
 	// Create logs directory if it doesn't exist
-	logDir := "logs"
+	logDir := paths.LogDir()
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}

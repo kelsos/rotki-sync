@@ -22,12 +22,26 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 # Linting
 GOLINT=golangci-lint
 
-.PHONY: all build clean test coverage lint fmt mod-tidy download-golangci-lint help
+# Install location for a user-local install (no sudo). Overridable, e.g.
+# `make install INSTALL_DIR=/usr/local/bin`.
+INSTALL_DIR ?= $(HOME)/.local/bin
+
+.PHONY: all build install uninstall clean test coverage lint fmt mod-tidy download-golangci-lint help
 
 all: lint fmt build
 
 build:
 	$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) -v $(MAIN_PATH)
+
+install:
+	@mkdir -p $(INSTALL_DIR)
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(INSTALL_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	@echo "installed $(INSTALL_DIR)/$(BINARY_NAME)"
+	@case ":$(PATH):" in *":$(INSTALL_DIR):"*) ;; *) echo "note: $(INSTALL_DIR) is not on your PATH" ;; esac
+
+uninstall:
+	rm -f $(INSTALL_DIR)/$(BINARY_NAME)
+	@echo "removed $(INSTALL_DIR)/$(BINARY_NAME)"
 
 clean:
 	$(GOCLEAN)
@@ -66,6 +80,8 @@ build-darwin:
 help:
 	@echo "Available commands:"
 	@echo "  make build           - Build the application"
+	@echo "  make install         - Build and install to INSTALL_DIR (default ~/.local/bin)"
+	@echo "  make uninstall       - Remove the installed binary from INSTALL_DIR"
 	@echo "  make clean           - Clean build artifacts"
 	@echo "  make test            - Run tests"
 	@echo "  make coverage        - Generate test coverage report"
