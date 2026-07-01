@@ -57,6 +57,58 @@ func TestIsEndpointMissing(t *testing.T) {
 	}
 }
 
+func TestIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "403 forbidden",
+			err:  &HTTPError{StatusCode: http.StatusForbidden, Body: "not available for your current subscription tier"},
+			want: true,
+		},
+		{
+			name: "402 payment required",
+			err:  &HTTPError{StatusCode: http.StatusPaymentRequired, Body: "premium required"},
+			want: true,
+		},
+		{
+			name: "wrapped 403",
+			err:  fmt.Errorf("failed to get monerium status: %w", &HTTPError{StatusCode: http.StatusForbidden, Body: "x"}),
+			want: true,
+		},
+		{
+			name: "404 is not unavailable",
+			err:  &HTTPError{StatusCode: http.StatusNotFound, Body: "missing"},
+			want: false,
+		},
+		{
+			name: "500 is not unavailable",
+			err:  &HTTPError{StatusCode: 500, Body: "internal error"},
+			want: false,
+		},
+		{
+			name: "plain error",
+			err:  errors.New("connection refused"),
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsUnavailable(tc.err); got != tc.want {
+				t.Errorf("IsUnavailable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEndpointExists(t *testing.T) {
 	// A backend that registers everything except /api/1/blockchains/gone.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

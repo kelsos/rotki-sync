@@ -28,6 +28,21 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP error %d: %s", e.StatusCode, e.Body)
 }
 
+// IsUnavailable reports whether err indicates the backend deliberately refused
+// the request because the resource is not available to this user — a 402
+// (payment required) or 403 (forbidden), e.g. an integration gated behind a
+// subscription tier. Unlike a transient failure this will not succeed on
+// retry, so a caller probing whether a feature is configured should treat it
+// as a definitive "no" rather than an error.
+func IsUnavailable(err error) bool {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusPaymentRequired ||
+			httpErr.StatusCode == http.StatusForbidden
+	}
+	return false
+}
+
 // IsEndpointMissing reports whether err indicates the endpoint no longer exists
 // on the backend — a 404, or rotki's "requested URL was not found" body. This
 // is a contract break (the route was removed or renamed), not a transient
@@ -68,31 +83,42 @@ func (c *APIClient) BuildURL(endpoint string) string {
 
 // Get makes a GET request to the specified endpoint
 func (c *APIClient) Get(endpoint string, result interface{}) error {
-	return c.request(http.MethodGet, endpoint, nil, result)
+	return c.request(http.MethodGet, endpoint, nil, result, false)
+}
+
+// GetQuiet is like Get but does not log a non-2xx response at error level. Use
+// it for status probes where an expected 4xx (e.g. a 403 for a subscription-
+// gated integration) is handled by the caller and should not surface as an
+// error in the logs. The typed *HTTPError is still returned so the caller can
+// inspect the status code (see IsUnavailable).
+func (c *APIClient) GetQuiet(endpoint string, result interface{}) error {
+	return c.request(http.MethodGet, endpoint, nil, result, true)
 }
 
 // Post makes a POST request to the specified endpoint
 func (c *APIClient) Post(endpoint string, body interface{}, result interface{}) error {
-	return c.request(http.MethodPost, endpoint, body, result)
+	return c.request(http.MethodPost, endpoint, body, result, false)
 }
 
 // Put makes a PUT request to the specified endpoint
 func (c *APIClient) Put(endpoint string, body interface{}, result interface{}) error {
-	return c.request(http.MethodPut, endpoint, body, result)
+	return c.request(http.MethodPut, endpoint, body, result, false)
 }
 
 // Delete makes a DELETE request to the specified endpoint
 func (c *APIClient) Delete(endpoint string, result interface{}) error {
-	return c.request(http.MethodDelete, endpoint, nil, result)
+	return c.request(http.MethodDelete, endpoint, nil, result, false)
 }
 
 // Patch makes a PATCH request to the specified endpoint
 func (c *APIClient) Patch(endpoint string, body interface{}, result interface{}) error {
-	return c.request(http.MethodPatch, endpoint, body, result)
+	return c.request(http.MethodPatch, endpoint, body, result, false)
 }
 
-// request is the core HTTP request method
-func (c *APIClient) request(method, endpoint string, body interface{}, result interface{}) error {
+// request is the core HTTP request method. When quiet is true a non-2xx
+// response is returned as a typed *HTTPError without being logged at error
+// level (the caller is expected to handle it).
+func (c *APIClient) request(method, endpoint string, body interface{}, result interface{}, quiet bool) error {
 	url := c.BuildURL(endpoint)
 	start := time.Now()
 	logger.Debug("Starting %s request to %s", method, url)
@@ -128,7 +154,9 @@ func (c *APIClient) request(method, endpoint string, body interface{}, result in
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		logger.Error("%s: HTTP error %d: %s", url, resp.StatusCode, string(bodyBytes))
+		if !quiet {
+			logger.Error("%s: HTTP error %d: %s", url, resp.StatusCode, string(bodyBytes))
+		}
 		return &HTTPError{StatusCode: resp.StatusCode, URL: url, Body: string(bodyBytes)}
 	}
 

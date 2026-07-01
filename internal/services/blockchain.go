@@ -619,7 +619,12 @@ func (s *BlockchainService) appendIfConfigured(
 // via GET /services/monerium ({"result": {"authenticated": bool}}).
 func (s *BlockchainService) isMoneriumConfigured() (bool, error) {
 	var response map[string]interface{}
-	if err := s.client.Get("/services/monerium", &response); err != nil {
+	if err := s.client.GetQuiet("/services/monerium", &response); err != nil {
+		if client.IsUnavailable(err) {
+			// Subscription tier gates Monerium off entirely (403/402). That is a
+			// definitive "not configured", not a transient error — skip quietly.
+			return false, nil
+		}
 		return false, fmt.Errorf("failed to get monerium status: %w", err)
 	}
 
@@ -636,7 +641,12 @@ func (s *BlockchainService) isMoneriumConfigured() (bool, error) {
 // the presence of a "gnosis_pay" key means credentials are stored.
 func (s *BlockchainService) isGnosisPayConfigured() (bool, error) {
 	var response map[string]interface{}
-	if err := s.client.Get("/external_services", &response); err != nil {
+	if err := s.client.GetQuiet("/external_services", &response); err != nil {
+		if client.IsUnavailable(err) {
+			// Not available for this subscription tier (403/402) — treat as a
+			// definitive "not configured" and skip quietly.
+			return false, nil
+		}
 		return false, fmt.Errorf("failed to get external services: %w", err)
 	}
 
