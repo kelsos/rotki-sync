@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#
+# pre-push: fuller suite mirroring CI (lint + test + build) before code
+# leaves your machine. Bypass with `git push --no-verify` if you must.
+set -euo pipefail
+
+# golangci-lint is optional locally; CI always runs it. Skip with a warning
+# rather than blocking a push when the tool isn't installed.
+if command -v golangci-lint >/dev/null 2>&1; then
+  echo "pre-push: make lint"
+  make lint
+else
+  echo "pre-push: golangci-lint not found — skipping lint (CI will run it)." >&2
+  echo "          install it with 'make download-golangci-lint'." >&2
+fi
+
+echo "pre-push: make test"
+make test
+
+echo "pre-push: make build"
+make build

@@ -26,7 +26,7 @@ GOLINT=golangci-lint
 # `make install INSTALL_DIR=/usr/local/bin`.
 INSTALL_DIR ?= $(HOME)/.local/bin
 
-.PHONY: all build install uninstall clean test coverage lint fmt mod-tidy download-golangci-lint help
+.PHONY: all build install uninstall clean test coverage lint fmt mod-tidy download-golangci-lint hooks help
 
 all: lint fmt build
 
@@ -67,6 +67,12 @@ mod-tidy:
 download-golangci-lint:
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin v2.11.3
 
+# Enable the repo's git hooks (.githooks/pre-commit, pre-push). One-time
+# per clone. Disable with `git config --unset core.hooksPath`.
+hooks:
+	git config core.hooksPath .githooks
+	@echo "git hooks enabled (core.hooksPath=.githooks)"
+
 # cross-compilation for different platforms
 build-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY_UNIX) -v $(MAIN_PATH)
@@ -89,6 +95,7 @@ help:
 	@echo "  make fmt             - Format code"
 	@echo "  make mod-tidy        - Tidy Go modules"
 	@echo "  make download-golangci-lint - Download golangci-lint"
+	@echo "  make hooks           - Enable git pre-commit/pre-push hooks"
 	@echo "  make build-linux     - Build for Linux"
 	@echo "  make build-windows   - Build for Windows"
 	@echo "  make build-darwin    - Build for macOS"

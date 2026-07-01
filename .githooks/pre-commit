@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#
+# pre-commit: fast checks on staged Go files (formatting + vet).
+# Slower checks (lint/test/build) run in pre-push and CI.
+# Bypass with `git commit --no-verify` if you must.
+set -euo pipefail
+
+# Only look at staged, added/copied/modified Go files.
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+
+if [ ${#staged[@]} -eq 0 ]; then
+  exit 0
+fi
+
+# gofmt: fail (and list offenders) if anything isn't formatted with -s.
+unformatted=$(gofmt -l -s "${staged[@]}" || true)
+if [ -n "$unformatted" ]; then
+  echo "pre-commit: these files need formatting — run 'make fmt':" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+
+# go vet on the whole module (staged Go changes can affect any package).
+echo "pre-commit: go vet ./..."
+go vet ./...
