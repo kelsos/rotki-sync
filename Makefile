@@ -65,7 +65,7 @@ mod-tidy:
 	$(GOMOD) tidy
 
 download-golangci-lint:
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin v2.11.3
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin v2.13.1
 
 # Enable the repo's git hooks (.githooks/pre-commit, pre-push). One-time
 # per clone. Disable with `git config --unset core.hooksPath`.

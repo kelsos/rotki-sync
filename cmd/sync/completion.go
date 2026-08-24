@@ -14,6 +14,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// The shells with a completion installer. Named so the accepted argument, the
+// $SHELL detection and the dispatch below cannot drift apart.
+const (
+	shellBash = "bash"
+	shellZsh  = "zsh"
+	shellFish = "fish"
+)
+
 // completionInstallCmd installs (or updates) the shell completion script into a
 // per-user directory, so users don't have to redirect `completion <shell>`
 // themselves. Re-running it regenerates the file, which is also how you update
@@ -26,18 +34,18 @@ func completionInstallCmd(root *cobra.Command) *cobra.Command {
 			"With no argument the shell is detected from $SHELL. Re-run after upgrading\n" +
 			"rotki-sync to refresh the completions.",
 		Args:      cobra.MaximumNArgs(1),
-		ValidArgs: []string{"bash", "zsh", "fish"},
+		ValidArgs: []string{shellBash, shellZsh, shellFish},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			shell := detectShell()
 			if len(args) == 1 {
 				shell = args[0]
 			}
 			switch shell {
-			case "zsh":
+			case shellZsh:
 				return installZshCompletion(root)
-			case "bash":
+			case shellBash:
 				return installBashCompletion(root)
-			case "fish":
+			case shellFish:
 				return installFishCompletion(root)
 			case "":
 				return fmt.Errorf("could not detect shell from $SHELL; pass one of bash|zsh|fish")
@@ -53,7 +61,7 @@ func completionInstallCmd(root *cobra.Command) *cobra.Command {
 func detectShell() string {
 	base := filepath.Base(os.Getenv("SHELL"))
 	switch base {
-	case "zsh", "bash", "fish":
+	case shellZsh, shellBash, shellFish:
 		return base
 	}
 	return ""

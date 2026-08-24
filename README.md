@@ -19,7 +19,7 @@ Rotki Sync is a Go CLI tool that interacts with the rotki-core API to perform va
 
 ### Prerequisites
 
-- Go 1.26 or later (the exact toolchain is pinned in `go.mod`)
+- Go 1.27 or later (the exact toolchain is pinned in `go.mod`)
 - rotki-core binary (can be downloaded using the CLI)
 
 ### Building from Source
