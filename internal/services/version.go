@@ -16,7 +16,11 @@ import (
 // rotki-core v1.41.0 (commit ac1212bcb8 "Generalize tx decoding endpoints");
 // the unified /blockchains/transactions fetch route predates even that. The
 // gate compares on major.minor, so any minor jump is flagged for re-check.
-const LastTestedCoreVersion = "1.43.2"
+//
+// v1.44.0 was validated with a full multi-user sync run: every route this CLI
+// uses is unchanged, and the move of the API server from gevent to uvicorn/ASGI
+// left the /ws path, its message envelope and the async task contract intact.
+const LastTestedCoreVersion = "1.44.0"
 
 // semver holds a parsed major.minor.patch version. Pre-release/build suffixes
 // are ignored.

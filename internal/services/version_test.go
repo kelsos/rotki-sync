@@ -9,12 +9,12 @@ func TestCheckCoreVersion(t *testing.T) {
 		wantCompatible bool
 	}{
 		{"exact match", LastTestedCoreVersion, true},
-		{"same minor different patch", "1.43.99", true},
-		{"same minor patch zero", "1.43.0", true},
-		{"leading v tolerated", "v1.43.2", true},
-		{"prerelease suffix tolerated", "1.43.2-rc1", true},
-		{"newer minor flagged", "1.44.0", false},
-		{"older minor flagged", "1.42.9", false},
+		{"same minor different patch", "1.44.99", true},
+		{"same minor patch zero", "1.44.0", true},
+		{"leading v tolerated", "v1.44.0", true},
+		{"prerelease suffix tolerated", "1.44.0-rc1", true},
+		{"newer minor flagged", "1.45.0", false},
+		{"older minor flagged", "1.43.9", false},
 		{"newer major flagged", "2.0.0", false},
 		{"unparseable flagged", "unknown", false},
 		{"empty flagged", "", false},
